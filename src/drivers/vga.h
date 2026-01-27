@@ -22,6 +22,7 @@
 #define VGA_COLOR_WHITE 15
 
 void terminal_initialize();
+void terminal_clear(); // <--- Added this
 void terminal_set_color(uint8_t fg, uint8_t bg);
 void kprint(const char* str);
 void kprint_char(char c);
