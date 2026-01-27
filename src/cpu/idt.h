@@ -5,15 +5,13 @@
 
 // This struct matches the order of 'push' instructions in interrupts.asm
 typedef struct {
-    // Registers pushed by isr_common
+    // 15 general registers saved by isr_common
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rdx, rcx, rbx, rax, rbp;
     
-    // Pushed by the macro/CPU
+    // Pushed by macro/CPU
     uint64_t int_no;
     uint64_t err_code;
-    
-    // Pushed by CPU automatically
     uint64_t rip, cs, rflags, rsp, ss;
 } __attribute__((packed)) registers_t;
 

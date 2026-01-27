@@ -27,12 +27,12 @@ void execute_command(char* input) {
     else if (strcmp(input, "ticks") == 0) {
         kprintf("\nSystem ticks: %d", get_ticks());
     }
-    else if (strcmp(input, "panic") == 0) {
-        kpanic(0, "USER_REQUESTED_PANIC");
-    }
     else if (strcmp(input, "divzero") == 0) {
         kprintf("\nDividing by zero...");
-        __asm__ volatile ("mov $0, %%rax; div %%rax;" : : : "rax");
+        volatile int a = 1;
+        volatile int b = 0;
+        volatile int c = a / b;
+        (void)c;
     }
     else if (input[0] == 'e' && input[1] == 'c' && input[2] == 'h' && input[3] == 'o') {
         kprintf("\n%s", input + 5); 

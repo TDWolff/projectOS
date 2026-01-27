@@ -1,4 +1,6 @@
 [bits 64]
+extern isr_handler
+global load_idt
 
 %macro ISR_NOERRCODE 1
 global isr%1
@@ -15,7 +17,6 @@ isr%1:
     jmp isr_common
 %endmacro
 
-; Exceptions
 ISR_NOERRCODE 0
 ISR_NOERRCODE 1
 ISR_NOERRCODE 2
@@ -33,12 +34,8 @@ ISR_ERRCODE   13
 ISR_ERRCODE   14
 ISR_NOERRCODE 15
 
-; Hardware IRQs
 ISR_NOERRCODE 32 ; Timer
 ISR_NOERRCODE 33 ; Keyboard
-
-extern isr_handler
-global load_idt
 
 load_idt:
     lidt [rdi]
@@ -46,7 +43,7 @@ load_idt:
     ret
 
 isr_common:
-    ; Save all registers
+    ; 1. Push all 15 Registers
     push rbp
     push rax
     push rbx
@@ -63,20 +60,14 @@ isr_common:
     push r14
     push r15
 
-    ; --- Stack Alignment Magic ---
-    ; We must ensure RSP is a multiple of 16 before calling C.
-    mov rbp, rsp          ; Save original RSP in RBP
-    push rbp              ; Push original RSP to stack (8 bytes)
-    push qword [rbp]      ; Push again (another 8 bytes) to align to 16
-    
-    mov rdi, rbp          ; Pass original RSP (the registers_t struct) as 1st arg
-    call isr_handler      ; Call the C code
+    ; 2. Call C
+    mov rdi, rsp      ; Pass stack pointer
+    call isr_handler  ; Returns new stack pointer in RAX
 
-    pop rax               ; Clean up alignment pushes
-    pop rax
-    mov rsp, rbp          ; Restore original RSP
-    ; -----------------------------
+    ; 3. Switch Stack
+    mov rsp, rax 
 
+    ; 4. Restore
     pop r15
     pop r14
     pop r13
@@ -92,5 +83,5 @@ isr_common:
     pop rbx
     pop rax
     pop rbp
-    add rsp, 16           ; Clean up error code and int number
+    add rsp, 16
     iretq

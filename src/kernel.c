@@ -2,33 +2,40 @@
 #include "drivers/timer.h"
 #include "drivers/keyboard.h"
 #include "drivers/shell.h"
-#include "lib/stdio.h"
 #include "cpu/idt.h"
+#include "cpu/task.h"
 #include "mem/pmm.h"
 #include "mem/heap.h"
+#include "lib/stdio.h"
+
+void task_a() {
+    while(1) {
+        (*(uint16_t*)0xb8f9c) = (uint16_t)'A' | (uint16_t)0x0E00;
+        __asm__ volatile("hlt");
+    }
+}
+
+void task_b() {
+    while(1) {
+        (*(uint16_t*)0xb8f9e) = (uint16_t)'B' | (uint16_t)0x0D00;
+        __asm__ volatile("hlt");
+    }
+}
 
 void kernel_main(void* mb_info) {
-    // 1. Initialize Video
     terminal_initialize();
-    
-    // 2. Setup Memory (Crucial for shell and heap)
     pmm_init(mb_info);
     heap_init();
     
-    // 3. Setup Shell logic
-    shell_init();
+    task_init();          
+    create_task(task_a);  
+    create_task(task_b);  
 
-    // 4. Setup Interrupts LAST
-    // This order ensures the keyboard has a working shell/heap to talk to
-    idt_init(); 
+    idt_init();           
     timer_init(100);
     keyboard_init();
+    
+    shell_init();
 
-    kprintf("\nProjectOS 64-bit Kernel Initialized.\n");
-    kprintf("Interrupts are now live.\n> ");
-
-    while(1) {
-        // Wait for an interrupt (keyboard or timer)
-        __asm__ volatile ("hlt");
-    }
+    while(1) { __asm__ volatile ("hlt"); }
 }

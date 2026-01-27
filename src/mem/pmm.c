@@ -4,7 +4,7 @@
 #include "../lib/stdio.h"
 
 #define PAGE_SIZE 4096
-#define BUMP_MEM  0x200000 // 2MB: Protect everything below this (BIOS + Kernel + Stack)
+#define BUMP_MEM  0x400000 // 4MB: Protect everything below this (BIOS + Kernel + Stack)
 
 uint8_t* bitmap;
 uint64_t max_pages;
@@ -97,14 +97,15 @@ void pmm_init(void* mb_info) {
 }
 
 void* pmm_alloc() {
-    // Start searching from page 1 to ensure we never return 0x0 (NULL)
-    for (uint64_t i = 1; i < max_pages; i++) {
+    // Start loop from a higher index to avoid low memory addresses
+    for (uint64_t i = 1024; i < max_pages; i++) {
         if (!(bitmap[i / 8] & (1 << (i % 8)))) {
             bitmap[i / 8] |= (1 << (i % 8));
             return (void*)(i * PAGE_SIZE);
         }
     }
-    return 0; // Out of memory
+    kprintf("PMM: OUT OF MEMORY!\n"); // Debug print
+    return 0; 
 }
 
 void pmm_free(void* ptr) {

@@ -1,4 +1,5 @@
 #include "idt.h"
+#include "task.h"
 #include "../drivers/vga.h"
 #include "../drivers/timer.h"
 #include "../drivers/keyboard.h"
@@ -78,24 +79,28 @@ void kpanic(registers_t* regs, const char* reason) {
     while(1) { __asm__ volatile("hlt"); }
 }
 
-void isr_handler(uint64_t* stack_ptr) {
-    // Cast the raw stack pointer to our registers struct
+uint64_t isr_handler(uint64_t* stack_ptr) {
     registers_t* regs = (registers_t*)stack_ptr;
+    uint64_t return_rsp = (uint64_t)stack_ptr;
 
     if (regs->int_no < 32) {
-        kpanic(regs, "CRITICAL_PROCESS_DIED");
+        kpanic(regs, "CPU_EXCEPTION");
     } 
     
     if (regs->int_no == 32) {
         timer_handler();
+        return_rsp = schedule((uint64_t)stack_ptr);
     } else if (regs->int_no == 33) {
         keyboard_handler();
     }
 
+    // Send EOI
     if (regs->int_no >= 32) {
         if (regs->int_no >= 40) outb(0xA0, 0x20);
         outb(0x20, 0x20);
     }
+
+    return return_rsp; 
 }
 
 void pic_remap() {
