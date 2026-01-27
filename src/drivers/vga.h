@@ -12,6 +12,12 @@ void terminal_set_color(uint8_t fg, uint8_t bg);
 void kprint(const char* str);
 void kprint_char(char c);
 
+void* get_framebuffer_addr();
+uint32_t get_fb_pitch();
+
+void video_blit_8x8(int x, int y, uint32_t* data);
+uint32_t video_get_pixel(int x, int y);
+
 #define VGA_COLOR_BLACK 0
 #define VGA_COLOR_BLUE 1
 #define VGA_COLOR_RED 4

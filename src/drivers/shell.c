@@ -20,7 +20,7 @@ void shell_init() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-        kprintf("\nls, cat, clear, ticks, panic, divzero, echo");
+        kprintf("\nls, cat, clear, ticks, divzero, echo");
     } 
     // 2. LS (List Files)
     else if (strcmp(input, "ls") == 0) {

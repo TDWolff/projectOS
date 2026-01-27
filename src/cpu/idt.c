@@ -83,7 +83,12 @@ void kpanic(registers_t* regs, const char* reason) {
 
 uint64_t isr_handler(uint64_t* stack_ptr) {
     registers_t* regs = (registers_t*)stack_ptr;
-    uint64_t return_rsp = (uint64_t)stack_ptr;
+
+    // Send EOI immediately
+    if (regs->int_no >= 32) {
+        if (regs->int_no >= 40) outb(0xA0, 0x20);
+        outb(0x20, 0x20);
+    }
 
     if (regs->int_no < 32) {
         kpanic(regs, "CPU_EXCEPTION");
@@ -91,20 +96,22 @@ uint64_t isr_handler(uint64_t* stack_ptr) {
     
     if (regs->int_no == 32) {
         timer_handler();
-        return_rsp = schedule((uint64_t)stack_ptr);
-    } else if (regs->int_no == 33) {
+        // Only return a new task stack if it's the timer
+        return schedule((uint64_t)stack_ptr);
+    } 
+    
+    if (regs->int_no == 33) {
         keyboard_handler();
-    } else if (regs->int_no == 44) {
-        mouse_handler(); // <--- CALL MOUSE
+    } 
+    
+    if (regs->int_no == 44) {
+        mouse_handler();
+        return (uint64_t)stack_ptr;
     }
 
-    // Send EOI
-    if (regs->int_no >= 32) {
-        if (regs->int_no >= 40) outb(0xA0, 0x20); // Send to Slave PIC if IRQ 8-15
-        outb(0x20, 0x20);
-    }
-
-    return return_rsp; 
+    // For Keyboard and Mouse, always return the SAME stack (no task switch)
+    // This prevents the flicker!
+    return (uint64_t)stack_ptr; 
 }
 
 void pic_remap() {

@@ -153,3 +153,25 @@ void terminal_set_color(uint8_t fg, uint8_t bg) {
     if (bg == 1)  bg_color = 0x000000FF;
     else bg_color = 0;
 }
+
+void* get_framebuffer_addr() { return fb_addr; }
+uint32_t get_fb_pitch() { return fb_pitch; }
+
+void video_blit_8x8(int x, int y, uint32_t* data) {
+    if (!fb_addr) return;
+    // fb_pitch is in bytes, fb_addr is uint32_t*
+    uint8_t* screen_ptr = (uint8_t*)fb_addr + (y * fb_pitch) + (x * 4);
+    
+    for (int i = 0; i < 8; i++) {
+        uint32_t* line_dst = (uint32_t*)screen_ptr;
+        for (int j = 0; j < 8; j++) {
+            line_dst[j] = data[i * 8 + j];
+        }
+        screen_ptr += fb_pitch;
+    }
+}
+
+uint32_t video_get_pixel(int x, int y) {
+    if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
+    return *(uint32_t*)((uint8_t*)fb_addr + (y * fb_pitch) + (x * 4));
+}
