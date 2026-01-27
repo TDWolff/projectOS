@@ -140,6 +140,11 @@ void terminal_clear() {
     cursor_y = 0;
 }
 
+uint32_t getpixel(int x, int y) {
+    if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
+    return *(uint32_t*)((uint8_t*)fb_addr + (y * fb_pitch) + (x * 4));
+}
+
 void terminal_initialize() {}
 void terminal_set_color(uint8_t fg, uint8_t bg) { 
     // Simplified conversion for now

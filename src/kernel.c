@@ -8,6 +8,7 @@
 #include "mem/heap.h"
 #include "fs/initrd.h"
 #include "cpu/task.h"
+#include "drivers/mouse.h"
 
 void task_a() {
     while(1) {
@@ -32,16 +33,17 @@ void task_b() {
 }
 
 void kernel_main(void* mb_info) {
+    terminal_initialize();
     pmm_init(mb_info);
     heap_init();
     initrd_init(mb_info);
     video_init(mb_info);
     
-    terminal_clear();
-
     idt_init(); 
     timer_init(100);
     keyboard_init();
+    mouse_init(); // <--- INITIALIZE MOUSE
+    
     task_init();
     create_task(task_a);
     create_task(task_b);

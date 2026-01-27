@@ -66,7 +66,7 @@ iso: kernel.bin limine/limine
 	./limine/limine bios-install os.iso
 
 run: iso
-	qemu-system-x86_64 -cdrom os.iso
+	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa
 
 clean:
 	rm -f *.o src/*.o src/drivers/*.o *.bin *.iso lib/*.o src/fs/*.o src/cpu/*.o src/mem/*.o

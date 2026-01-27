@@ -34,8 +34,10 @@ ISR_ERRCODE   13
 ISR_ERRCODE   14
 ISR_NOERRCODE 15
 
+
 ISR_NOERRCODE 32 ; Timer
 ISR_NOERRCODE 33 ; Keyboard
+ISR_NOERRCODE 44 ; Mouse IRQ 12 mapped to 44
 
 load_idt:
     lidt [rdi]

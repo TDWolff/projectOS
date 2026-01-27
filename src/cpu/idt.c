@@ -5,6 +5,7 @@
 #include "../drivers/keyboard.h"
 #include "../lib/stdio.h"
 #include "../include/ports.h"
+#include "../drivers/mouse.h"
 
 void pic_remap(); 
 
@@ -23,7 +24,7 @@ const char *exception_messages[] = {
 };
 
 extern void isr0(); extern void isr8(); extern void isr13();
-extern void isr14(); extern void isr32(); extern void isr33();
+extern void isr14(); extern void isr32(); extern void isr33(); extern void isr44();
 extern void load_idt(idtr_t*);
 
 void idt_set_gate(uint8_t num, uint64_t base) {
@@ -46,6 +47,7 @@ void idt_init() {
     idt_set_gate(14, (uint64_t)isr14);
     idt_set_gate(32, (uint64_t)isr32);
     idt_set_gate(33, (uint64_t)isr33);
+    idt_set_gate(44, (uint64_t)isr44);
 
     pic_remap();
     load_idt(&idtr);
@@ -92,11 +94,13 @@ uint64_t isr_handler(uint64_t* stack_ptr) {
         return_rsp = schedule((uint64_t)stack_ptr);
     } else if (regs->int_no == 33) {
         keyboard_handler();
+    } else if (regs->int_no == 44) {
+        mouse_handler(); // <--- CALL MOUSE
     }
 
     // Send EOI
     if (regs->int_no >= 32) {
-        if (regs->int_no >= 40) outb(0xA0, 0x20);
+        if (regs->int_no >= 40) outb(0xA0, 0x20); // Send to Slave PIC if IRQ 8-15
         outb(0x20, 0x20);
     }
 
@@ -112,6 +116,7 @@ void pic_remap() {
     outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait();
     outb(0xA1, 0x01); io_wait();
-    outb(0x21, 0xFC); 
-    outb(0xA1, 0xFF);
+
+    outb(0x21, 0xF8); // Timer(0), Keyboard(1), SlaveBridge(2)
+    outb(0xA1, 0xEF); // Mouse(12)
 }
