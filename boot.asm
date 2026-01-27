@@ -73,6 +73,10 @@ long_mode_start:
     mov fs, ax
     mov gs, ax
 
+    ; EBX was set by the bootloader in 32-bit mode. 
+    ; It contains the pointer to the Multiboot2 info structure.
+    ; We pass it as the first argument (RDI) to kernel_main.
+    mov edi, ebx 
     call kernel_main
 
     hlt

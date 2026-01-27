@@ -1,8 +1,8 @@
 #include "idt.h"
+#include "../drivers/vga.h"
 #include "../drivers/timer.h"
 #include "../drivers/keyboard.h"
 #include "../lib/stdio.h"
-#include "../drivers/vga.h"
 #include "../include/ports.h"
 
 void pic_remap(); 
@@ -21,9 +21,8 @@ const char *exception_messages[] = {
     "Reserved", "Reserved", "Reserved", "Reserved", "Reserved", "Reserved"
 };
 
-extern void isr0(); extern void isr1(); extern void isr8();
-extern void isr13(); extern void isr14(); extern void isr32();
-extern void isr33();
+extern void isr0(); extern void isr8(); extern void isr13();
+extern void isr14(); extern void isr32(); extern void isr33();
 extern void load_idt(idtr_t*);
 
 void idt_set_gate(uint8_t num, uint64_t base) {
@@ -51,48 +50,63 @@ void idt_init() {
     load_idt(&idtr);
 }
 
-void isr_handler(uint64_t* stack_ptr) {
-    uint64_t int_no = stack_ptr[15];
+// The core "Blue Screen" function
+void kpanic(registers_t* regs, const char* reason) {
+    __asm__ volatile("cli"); // Disable interrupts immediately
 
-    if (int_no < 32) {
-        terminal_set_color(VGA_COLOR_WHITE, VGA_COLOR_RED);
-        terminal_clear();
-        kprintf("!!! KERNEL PANIC !!!\n");
-        kprintf("Exception: %s (%d)\n", exception_messages[int_no], int_no);
-        kprintf("Address: %x\n", stack_ptr[17]); 
-        while(1) __asm__("hlt");
+    terminal_set_color(VGA_COLOR_WHITE, VGA_COLOR_BLUE); // Classic BSOD color
+    terminal_clear();
+
+    kprintf(" :(  A problem has been detected and ProjectOS has been shut down.\n\n");
+    kprintf("KERNEL_PANIC: %s\n", reason);
+    
+    if (regs) {
+        kprintf("Exception: %d (%s)  Error Code: %x\n", regs->int_no, exception_messages[regs->int_no], regs->err_code);
+        kprintf("RIP: %x   CS: %x   RFLAGS: %x\n", regs->rip, regs->cs, regs->rflags);
+        kprintf("RSP: %x   SS: %x   RBP: %x\n\n", regs->rsp, regs->ss, regs->rbp);
+        
+        // General Purpose Registers
+        kprintf("RAX: %x  RBX: %x  RCX: %x\n", regs->rax, regs->rbx, regs->rcx);
+        kprintf("RDX: %x  RSI: %x  RDI: %x\n", regs->rdx, regs->rsi, regs->rdi);
+        kprintf("R8:  %x  R9:  %x  R10: %x\n", regs->r8,  regs->r9,  regs->r10);
+    }
+
+    kprintf("\nTechnical Information:\n");
+    kprintf("*** STOP: 0x0000000%x\n\n", regs ? regs->int_no : 0);
+    kprintf("The system has been halted. Please restart your computer.");
+
+    while(1) { __asm__ volatile("hlt"); }
+}
+
+void isr_handler(uint64_t* stack_ptr) {
+    // Cast the raw stack pointer to our registers struct
+    registers_t* regs = (registers_t*)stack_ptr;
+
+    if (regs->int_no < 32) {
+        kpanic(regs, "CRITICAL_PROCESS_DIED");
     } 
     
-    if (int_no == 32) {
+    if (regs->int_no == 32) {
         timer_handler();
-    } else if (int_no == 33) {
+    } else if (regs->int_no == 33) {
         keyboard_handler();
     }
 
-    if (int_no >= 32) {
-        if (int_no >= 40) outb(0xA0, 0x20);
+    if (regs->int_no >= 32) {
+        if (regs->int_no >= 40) outb(0xA0, 0x20);
         outb(0x20, 0x20);
     }
 }
 
 void pic_remap() {
-    // Send initialization commands
     outb(0x20, 0x11); io_wait();
     outb(0xA0, 0x11); io_wait();
-    
-    // Set vector offsets
     outb(0x21, 0x20); io_wait();
     outb(0xA1, 0x28); io_wait();
-    
-    // Tell Master there is a slave
     outb(0x21, 0x04); io_wait();
     outb(0xA1, 0x02); io_wait();
-    
-    // Set mode
     outb(0x21, 0x01); io_wait();
     outb(0xA1, 0x01); io_wait();
-
-    // Enable IRQ0 and IRQ1, mask others
     outb(0x21, 0xFC); 
     outb(0xA1, 0xFF);
 }
