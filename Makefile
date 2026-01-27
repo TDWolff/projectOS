@@ -54,6 +54,7 @@ iso: kernel.bin limine/limine
 	cp kernel.bin iso_root/
 	cp limine.conf iso_root/
 	cp test.txt iso_root/
+	cp gohaclassic-16.psf iso_root/
 	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/

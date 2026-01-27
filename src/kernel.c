@@ -2,44 +2,49 @@
 #include "drivers/timer.h"
 #include "drivers/keyboard.h"
 #include "drivers/shell.h"
+#include "lib/stdio.h"
 #include "cpu/idt.h"
-#include "cpu/task.h"
 #include "mem/pmm.h"
 #include "mem/heap.h"
-#include "lib/stdio.h"
 #include "fs/initrd.h"
-#include "include/multiboot2.h"
+#include "cpu/task.h"
 
 void task_a() {
     while(1) {
-        (*(uint16_t*)0xb8f9c) = (uint16_t)'A' | (uint16_t)0x0E00;
-        __asm__ volatile("hlt");
+        // Draw a pulse bar
+        static int x = 0;
+        draw_rect(10, 740, 100, 5, 0x222222); // Background
+        draw_rect(10, 740, x, 5, 0xFFFF00);   // Yellow progress
+        x++; if(x > 100) x = 0;
+        sleep(2);
     }
 }
 
 void task_b() {
     while(1) {
-        (*(uint16_t*)0xb8f9e) = (uint16_t)'B' | (uint16_t)0x0D00;
-        __asm__ volatile("hlt");
+        // Draw a pulse bar
+        static int x = 0;
+        draw_rect(120, 740, 100, 5, 0x222222); // Background
+        draw_rect(120, 740, x, 5, 0xFF00FF);   // Pink progress
+        x++; if(x > 100) x = 0;
+        sleep(5);
     }
 }
 
 void kernel_main(void* mb_info) {
-    terminal_initialize();
     pmm_init(mb_info);
     heap_init();
-    
-    // Load file list into memory structures
     initrd_init(mb_info);
+    video_init(mb_info);
+    
+    terminal_clear();
 
-    task_init();          
-    create_task(task_a);  
-    create_task(task_b);  
-
-    idt_init();           
+    idt_init(); 
     timer_init(100);
     keyboard_init();
-    
+    task_init();
+    create_task(task_a);
+    create_task(task_b);
     shell_init();
 
     while(1) { __asm__ volatile ("hlt"); }
