@@ -14,27 +14,16 @@ void initrd_init(void* mb_info) {
          tag = (struct multiboot_tag*)((uint8_t*)tag + ((tag->size + 7) & ~7))) 
     {
         if (tag->type == MULTIBOOT_TAG_TYPE_MODULE) {
-            if (file_count >= MAX_FILES) break;
-
             struct multiboot_tag_module* mod = (struct multiboot_tag_module*)tag;
             file_t* f = &files[file_count];
             
-            // Try to copy name from cmdline
+            // Copy the name provided by Limine (which is now the Mac filename)
             int i = 0;
-            char* cmdline = (char*)mod->cmdline;
-            if (cmdline[0] != 0) {
-                while(cmdline[i] != 0 && i < 31) {
-                    f->name[i] = cmdline[i];
-                    i++;
-                }
-                f->name[i] = 0;
+            while(mod->cmdline[i] != 0 && i < 31) {
+                f->name[i] = mod->cmdline[i];
+                i++;
             }
-
-            // If name is still empty, auto-assign file_0, file_1, etc.
-            if (f->name[0] == 0) {
-                f->name[0] = 'f'; f->name[1] = 'i'; f->name[2] = 'l'; f->name[3] = 'e';
-                f->name[4] = '_'; f->name[5] = '0' + file_count; f->name[6] = 0;
-            }
+            f->name[i] = 0;
 
             f->address = (uint64_t)mod->mod_start;
             f->size = mod->mod_end - mod->mod_start;
