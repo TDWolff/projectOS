@@ -7,6 +7,8 @@
 #include "mem/pmm.h"
 #include "mem/heap.h"
 #include "lib/stdio.h"
+#include "fs/initrd.h"
+#include "include/multiboot2.h"
 
 void task_a() {
     while(1) {
@@ -27,6 +29,7 @@ void kernel_main(void* mb_info) {
     pmm_init(mb_info);
     heap_init();
     
+    read_initrd(mb_info);
     task_init();          
     create_task(task_a);  
     create_task(task_b);  

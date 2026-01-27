@@ -53,6 +53,7 @@ iso: kernel.bin limine/limine
 	mkdir -p iso_root/EFI/BOOT
 	cp kernel.bin iso_root/
 	cp limine.conf iso_root/
+	cp test.txt iso_root/
 	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
@@ -67,5 +68,5 @@ run: iso
 	qemu-system-x86_64 -cdrom os.iso
 
 clean:
-	rm -f *.o src/*.o src/drivers/*.o *.bin *.iso
+	rm -f *.o src/*.o src/drivers/*.o *.bin *.iso lib/*.o src/fs/*.o src/cpu/*.o src/mem/*.o
 	rm -rf iso_root
