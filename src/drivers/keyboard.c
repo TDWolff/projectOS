@@ -1,5 +1,6 @@
 #include "keyboard.h"
-#include "shell.h" // Added
+#include "vga.h"
+#include "shell.h"
 #include "../include/ports.h"
 
 char scancode_to_char[128] = {
@@ -11,12 +12,20 @@ char scancode_to_char[128] = {
 
 void keyboard_handler() {
     uint8_t scancode = inb(0x60);
-    if (scancode & 0x80) return;
-
-    if (scancode < 128) {
-        char c = scancode_to_char[scancode];
-        if (c > 0) {
-            shell_update(c); // Send to Shell instead of kprint_char
+    if (!(scancode & 0x80)) { // Key press
+        if (scancode < 128) {
+            char c = scancode_to_char[scancode];
+            if (c > 0) shell_update(c);
         }
     }
+}
+
+void keyboard_init() {
+    // 1. Drain the controller buffer to clear any leftover bootloader data
+    while (inb(0x64) & 0x01) {
+        inb(0x60);
+    }
+    
+    // 2. Send the 'Enable Scanning' command (0xF4)
+    outb(0x60, 0xF4);
 }

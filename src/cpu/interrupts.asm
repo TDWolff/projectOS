@@ -15,6 +15,7 @@ isr%1:
     jmp isr_common
 %endmacro
 
+; Exceptions
 ISR_NOERRCODE 0
 ISR_NOERRCODE 1
 ISR_NOERRCODE 2
@@ -32,6 +33,7 @@ ISR_ERRCODE   13
 ISR_ERRCODE   14
 ISR_NOERRCODE 15
 
+; Hardware IRQs
 ISR_NOERRCODE 32 ; Timer
 ISR_NOERRCODE 33 ; Keyboard
 
@@ -44,6 +46,7 @@ load_idt:
     ret
 
 isr_common:
+    ; Save all registers
     push rbp
     push rax
     push rbx
@@ -60,12 +63,19 @@ isr_common:
     push r14
     push r15
 
-    ; The stack is currently 16-byte aligned here because:
-    ; CPU pushes 5 registers, Macro pushes 2, we pushed 15 = 22 qwords total.
-    ; 22 * 8 = 176 (176 / 16 = 11.0). Perfect alignment.
+    ; --- Stack Alignment Magic ---
+    ; We must ensure RSP is a multiple of 16 before calling C.
+    mov rbp, rsp          ; Save original RSP in RBP
+    push rbp              ; Push original RSP to stack (8 bytes)
+    push qword [rbp]      ; Push again (another 8 bytes) to align to 16
+    
+    mov rdi, rbp          ; Pass original RSP (the registers_t struct) as 1st arg
+    call isr_handler      ; Call the C code
 
-    mov rdi, rsp
-    call isr_handler
+    pop rax               ; Clean up alignment pushes
+    pop rax
+    mov rsp, rbp          ; Restore original RSP
+    ; -----------------------------
 
     pop r15
     pop r14
@@ -82,5 +92,5 @@ isr_common:
     pop rbx
     pop rax
     pop rbp
-    add rsp, 16
+    add rsp, 16           ; Clean up error code and int number
     iretq
