@@ -29,7 +29,9 @@ void kernel_main(void* mb_info) {
     pmm_init(mb_info);
     heap_init();
     
-    read_initrd(mb_info);
+    // Load file list into memory structures
+    initrd_init(mb_info);
+
     task_init();          
     create_task(task_a);  
     create_task(task_b);  

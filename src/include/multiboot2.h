@@ -32,7 +32,7 @@ struct multiboot_tag_module {
     uint32_t mod_start;
     uint32_t mod_end;
     char cmdline[];
-};
+} __attribute__((packed));
 
 #define MULTIBOOT_TAG_TYPE_MODULE 3
 
