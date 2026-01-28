@@ -6,6 +6,7 @@
 #include "../lib/stdio.h"
 #include "../include/ports.h"
 #include "../drivers/mouse.h"
+#include "../mem/vmm.h"
 
 void pic_remap(); 
 
@@ -142,9 +143,10 @@ void syscall_handler(registers_t* regs) {
             kprintf((const char*)regs->rdi);
             break;
 
-        case 2:
-            return;
-        
+        case 5: // Syscall 5: get_fb_info
+            video_get_info((fb_info_t*)regs->rdi);
+            break;
+
         case 60: // Syscall 60: exit
             kprintf("\n[Process Exited with code %d]\n", regs->rdi);
             break;

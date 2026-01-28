@@ -13,6 +13,15 @@ void sys_kprintf(const char* str) {
     );
 }
 
+void sys_get_fb_info(fb_info_t* info) {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(5), "D"(info)
+        : "memory"
+    );
+}
+
 void sys_exit() {
     __asm__ volatile (
         "int $0x80"

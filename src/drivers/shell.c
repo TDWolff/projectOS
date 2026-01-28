@@ -22,7 +22,7 @@ void shell_init() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-        kprintf("\nls, cat, clear, ticks, divzero, echo");
+        kprintf("\nls, cat, clear, ticks, divzero, echo, run <program>");
     } 
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
@@ -65,6 +65,8 @@ void execute_command(char* input) {
             // 4. Return to kernel address space
             vmm_switch_pagemap((uint64_t*)kernel_pagemap);
 
+            // 5. Force a full screen redraw to clear the app's mess
+            terminal_clear();
             kprintf("\nProgram finished.");
             // In a real OS, we'd free the app_pagemap and its pages here
         } else {

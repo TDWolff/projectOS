@@ -4,6 +4,7 @@
 #include "../fs/initrd.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
+#include "../mem/vmm.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -156,6 +157,13 @@ void terminal_set_color(uint8_t fg, uint8_t bg) {
 
 void* get_framebuffer_addr() { return fb_addr; }
 uint32_t get_fb_pitch() { return fb_pitch; }
+
+void video_get_info(fb_info_t* info) {
+    info->addr = (uint64_t)fb_addr;
+    info->width = fb_width;
+    info->height = fb_height;
+    info->pitch = fb_pitch;
+}
 
 void video_blit_8x8(int x, int y, uint32_t* data) {
     if (!fb_addr) return;

@@ -18,6 +18,17 @@ uint32_t get_fb_pitch();
 void video_blit_8x8(int x, int y, uint32_t* data);
 uint32_t video_get_pixel(int x, int y);
 
+// Framebuffer Info for User Space
+typedef struct {
+    uint64_t addr;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+} fb_info_t;
+
+// Pass display info to user applications
+void video_get_info(fb_info_t* info);
+
 #define VGA_COLOR_BLACK 0
 #define VGA_COLOR_BLUE 1
 #define VGA_COLOR_RED 4
