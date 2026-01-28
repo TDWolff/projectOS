@@ -6,6 +6,7 @@
 #include "../lib/stdio.h"
 #include "../include/ports.h"
 #include "../drivers/mouse.h"
+#include "../drivers/shell.h"
 #include "../mem/vmm.h"
 #include "../fs/initrd.h"  // Added for file syscalls
 #include "../lib/string.h" // Added for memcpy
@@ -198,6 +199,32 @@ void syscall_handler(registers_t* regs) {
                      regs->rax = -1; // Error
                 }
             }
+            break;
+
+        case 22: // Syscall 22: run_program
+            if (regs->rdi) {
+                run_program((const char*)regs->rdi);
+            }
+            break;
+
+        case 11: // Syscall 11: get_mouse
+            if (regs->rdi && regs->rsi && regs->rdx) {
+                *(int*)regs->rdi = mouse_get_x();
+                *(int*)regs->rsi = mouse_get_y();
+                *(int*)regs->rdx = mouse_get_buttons();
+            }
+            break;
+
+        case 23: // Syscall 23: set_window_bounds
+            video_set_window_bounds((int)regs->rdi, (int)regs->rsi, (int)regs->rdx, (int)regs->rcx);
+            break;
+
+        case 24: // Syscall 24: mouse_hide
+            mouse_hide();
+            break;
+
+        case 25: // Syscall 25: mouse_show
+            mouse_show();
             break;
 
         default:

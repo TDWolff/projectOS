@@ -61,3 +61,48 @@ int sys_read_file(const char* filename, char* buffer, int max_size) {
     );
     return bytes_read;
 }
+
+void sys_run(const char* filename) {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(22), "D"(filename)
+        : "memory"
+    );
+}
+
+void sys_get_mouse(int* x, int* y, int* buttons) {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(11), "D"(x), "S"(y), "d"(buttons)
+        : "memory"
+    );
+}
+
+void sys_update_window(int x, int y, int w, int h) {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(23), "D"(x), "S"(y), "d"(w), "c"(h)
+        : "memory"
+    );
+}
+
+void sys_mouse_hide() {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(24) 
+        : "memory"
+    );
+}
+
+void sys_mouse_show() {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(25) 
+        : "memory"
+    );
+}

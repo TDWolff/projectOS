@@ -16,6 +16,9 @@
 #define SHELL_WIN_W 600
 #define SHELL_WIN_H 400
 
+static int shell_x = SHELL_X;
+static int shell_y = SHELL_Y;
+
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
@@ -40,23 +43,9 @@ void shell_init() {
 void draw_shell_window() {
     if (!shell_visible) return;
 
-    int x = SHELL_X;
-    int y = SHELL_Y;
-    int w = SHELL_WIN_W;
-    int h = SHELL_WIN_H;
-
-    // Window shadow
-    draw_rect(x + 4, y + 4, w, h, 0x404040);
-    // Window Body
-    draw_rect(x, y, w, h, 0xC0C0C0);
-    // Title Bar
-    draw_rect(x + 2, y + 2, w - 4, 25, 0x000080); // Classic Blue title
-    
-    // Label for title bar
-    video_draw_text(x + 10, y + 5, "Terminal", 0xFFFFFF);
-
-    // Text Area
-    draw_rect(x + 5, y + 30, w - 10, h - 35, 0x000000); // Black terminal area
+    // The kernel no longer draws the window body, as the user app 'terminal.pexe' handles it.
+    // However, we still might need to enforce the visual area if the shell is toggled.
+    // For now, we stub this out so we don't end up with double-drawing or kernel overwriting user gfx.
 }
 
 void shell_set_visible(bool visible) {
@@ -67,7 +56,7 @@ void shell_set_visible(bool visible) {
         draw_shell_window(); 
         
         // When opening the shell, set the kernel's text cursor inside the black box
-        video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
+        video_set_cursor(shell_x + 10, shell_y + 35);
         video_set_color(0xFFFFFFFF, 0x000000); // White text, Black bg
         
         // Remove the leading newline so it starts at the top-left of the black box
@@ -88,12 +77,14 @@ void shell_check_click() {
     int btn_x = 5;
     int btn_y = get_fb_height() - 35;
     
-    if (clicked && !last_mouse_button) {
-        if (mx >= btn_x && mx <= btn_x + 80 && my >= btn_y && my <= btn_y + 30) {
-            // Clicked Terminal Button
-            shell_visible = true; // Enable shell logic
-            kprintf("\nAttempting to run terminal.pexe...\n");
-            run_program("terminal.pexe");
+    if (clicked) {
+        if (!last_mouse_button) {
+            // Mouse Down Event
+            if (mx >= btn_x && mx <= btn_x + 80 && my >= btn_y && my <= btn_y + 30) {
+                shell_visible = true;
+                kprintf("\nAttempting to run terminal.pexe...\n");
+                run_program("terminal.pexe");
+            }
         }
     }
     last_mouse_button = clicked;
@@ -103,11 +94,15 @@ void run_program(const char* filename) {
     file_t* f = initrd_open(filename);
 
     if (f) {
+        // Handle nested execution: if an app is already running (e.g. terminal.pexe),
+        // we want to restore that state when the child process (e.g. stress_test.pexe) finishes.
+        bool parent_app_running = is_app_running;
         is_app_running = true;
+
         // Redraw desktop and window to ensure clean state
         video_draw_desktop();
         draw_shell_window();
-        video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
+        video_set_cursor(shell_x + 10, shell_y + 35);
         video_set_color(0xFFFFFFFF, 0x000000); // White text, Black bg
 
         // Optional: show a very brief status message. Commented out so
@@ -120,20 +115,27 @@ void run_program(const char* filename) {
         uint64_t* app_pagemap = vmm_create_address_space();
 
         // 2. Allocate and map the app to 4GB (User Space Territory)
-        // We'll calculate how many pages we need
-        uint64_t num_pages = (f->size + PAGE_SIZE - 1) / PAGE_SIZE;
+        // We'll calculate how many pages we need, plus extra for .bss (globals) and stack
+        uint64_t file_pages = (f->size + PAGE_SIZE - 1) / PAGE_SIZE;
+        uint64_t total_pages = file_pages + 64; // Add 256KB extra for BSS/Stack growth
         uint64_t app_virtual_base = 0x100000000;
 
-        for (uint64_t i = 0; i < num_pages; i++) {
+        for (uint64_t i = 0; i < total_pages; i++) {
             void* physical_page = pmm_alloc();
+            memset(physical_page, 0, PAGE_SIZE); // Ensure clean zero-init
+
             // Map the app virtual address to the allocated physical page
             // Crucial: Use PAGE_USER flag so the app can access its own memory!
             vmm_map_page(app_pagemap, app_virtual_base + (i * PAGE_SIZE), (uint64_t)physical_page, PAGE_WRITABLE | PAGE_USER);
             
-            // Copy data to the physical page
-            uint64_t copy_size = (i == num_pages - 1) ? (f->size % PAGE_SIZE) : PAGE_SIZE;
-            if (copy_size == 0) copy_size = PAGE_SIZE; // Handle exact multiples
-            memcpy(physical_page, (void*)(f->address + (i * PAGE_SIZE)), copy_size);
+            // Copy data to the physical page only if within file bounds
+            if (i < file_pages) {
+                uint64_t offset = i * PAGE_SIZE;
+                uint64_t remaining = f->size - offset;
+                uint64_t copy_size = (remaining > PAGE_SIZE) ? PAGE_SIZE : remaining;
+                
+                memcpy(physical_page, (void*)(f->address + offset), copy_size);
+            }
         }
 
         // 3. Switch to the new page map and jump!
@@ -152,18 +154,18 @@ void run_program(const char* filename) {
     // 4. Return to kernel address space
     vmm_switch_pagemap((uint64_t*)kernel_pagemap);
 
-    is_app_running = false;
+    // Restore the running state of the parent (e.g. true if returning to terminal.pexe)
+    is_app_running = parent_app_running;
 
-    // 5. (Debug) Do NOT immediately redraw the desktop.
-    // Leaving the last app frame visible makes it easier to see
-    // whether the app actually ran or crashed instead of a quick flash.
-    // You can call video_draw_desktop() here later if you want a clean reset.
-        // shell_visible = true; // Ensure shell is visible after app return
-        // draw_shell_window();
-        // kprintf("\nProgram finished.");
+    // 5. Redraw the desktop to remove any artifacts left by the program (like stress_test)
+    video_draw_desktop();
+    shell_visible = true; 
+    draw_shell_window();
+    video_set_color(0xFFFFFFFF, 0x000000); // Ensure text color is reset for the terminal
+    
     } else {
         kprintf("\nProgram not found: %s\n", filename);
-        shell_visible = false; // Reset if failed
+        // shell_visible = false; // Reset if failed (removed to keep terminal open)
     }
 }
 
@@ -206,7 +208,7 @@ void execute_command(char* input) {
     else if (strcmp(input, "clear") == 0) {
         video_draw_desktop();
         draw_shell_window();
-        video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
+        video_set_cursor(shell_x + 10, shell_y + 35);
         kprintf("root %% ");
         return;
     } 

@@ -5,8 +5,9 @@
 
 void mouse_init();
 void mouse_handler();
-void draw_mouse_cursor(int x, int y);
-void mouse_set_scale(int scale_x10);
+
+void mouse_hide();
+void mouse_show();
 
 int mouse_get_x();
 int mouse_get_y();

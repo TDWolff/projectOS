@@ -89,5 +89,5 @@ clean:
 	rm -f kernel.bin os.iso
 	rm -rf iso_root
 	rm -f apps/*.o
-	rm -f ../osstorage/stress_test.pexe
+	rm -f osstorage/stress_test.pexe
 	rm -f osstorage/terminal.pexe

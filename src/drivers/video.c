@@ -16,7 +16,24 @@ static uint32_t cursor_y = 0;
 static uint32_t fg_color = 0xFFFFFFFF; 
 static uint32_t bg_color = 0x00808080; // Default to Teal background
 
+// Window Bounds (Default matches old hardcoded values)
+static int win_x = 200;
+static int win_y = 150;
+static int win_w = 600;
+static int win_h = 400;
+
 static font_t loaded_font = {0};
+
+void video_set_window_bounds(int x, int y, int w, int h) {
+    win_x = x;
+    win_y = y;
+    win_w = w;
+    win_h = h;
+    
+    // Update cursor if it's outside
+    if (cursor_x < (uint32_t)(win_x + 5)) cursor_x = win_x + 5;
+    if (cursor_y < (uint32_t)(win_y + 30)) cursor_y = win_y + 30;
+}
 
 void putpixel(int x, int y, uint32_t color) {
     if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
@@ -107,14 +124,13 @@ void kprint_char(char c) {
     uint32_t area_w = fb_width;
     uint32_t area_h = fb_height;
 
-    // Use SHELL constants if they exist (we'll assume they do or use defaults)
-    // Note: In a real system we'd pass a 'window' context, 
-    // but for now we'll just hardcode the check.
-    if (cursor_x >= 200 && cursor_x <= 800 && cursor_y >= 150 && cursor_y <= 550) {
-        area_x = 205; // 5px padding
-        area_y = 180; // Below title bar
-        area_w = 590;
-        area_h = 365;
+    // Use dynamic window bounds
+    if (cursor_x >= (uint32_t)win_x && cursor_x <= (uint32_t)(win_x + win_w) &&
+        cursor_y >= (uint32_t)win_y && cursor_y <= (uint32_t)(win_y + win_h)) {
+        area_x = win_x + 5; // 5px padding
+        area_y = win_y + 30; // Below title bar
+        area_w = win_w - 10;
+        area_h = win_h - 35;
     }
 
     if (c == '\n') {
@@ -147,10 +163,9 @@ void kprint_char(char c) {
 
     // SCROLLING: If we hit the bottom of the area, move up
     if (cursor_y >= area_y + area_h - loaded_font.height) {
-        // Simplified: just reset to top of window for now
+        // Naive clean of the area to prevent messy overflow
+        draw_rect(area_x, area_y, area_w, area_h, 0x000000);
         cursor_y = area_y;
-        // In a full OS we'd blit the window up
-        draw_rect(area_x, area_y, area_w, area_h, 0x000000); 
     }
 }
 
@@ -205,6 +220,10 @@ void video_get_info(fb_info_t* info) {
     info->width = fb_width;
     info->height = fb_height;
     info->pitch = fb_pitch;
+    info->font_addr = (uint64_t)loaded_font.glyph_buffer;
+    info->font_width = loaded_font.width;
+    info->font_height = loaded_font.height;
+    info->font_bytes = loaded_font.bytes_per_glyph;
 }
 
 void video_draw_text(int x, int y, const char* str, uint32_t color) {

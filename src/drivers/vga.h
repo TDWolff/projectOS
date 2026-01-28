@@ -23,6 +23,7 @@ uint32_t get_fb_height();
 
 void video_blit_8x8(int x, int y, uint32_t* data);
 uint32_t video_get_pixel(int x, int y);
+void video_set_window_bounds(int x, int y, int w, int h);
 
 // Framebuffer Info for User Space
 typedef struct {
@@ -30,6 +31,10 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t pitch;
+    uint64_t font_addr;
+    uint32_t font_width;
+    uint32_t font_height;
+    uint32_t font_bytes;
 } fb_info_t;
 
 // Pass display info to user applications
