@@ -40,6 +40,18 @@ void idt_set_gate(uint8_t num, uint64_t base) {
     idt[num].reserved = 0;
 }
 
+// Same as idt_set_gate, but mark the descriptor as user-callable (DPL=3)
+void idt_set_gate_user(uint8_t num, uint64_t base) {
+    idt[num].isr_low = (uint16_t)(base & 0xFFFF);
+    idt[num].kernel_cs = 0x08;
+    idt[num].ist = 0;
+    // 0xEE = P=1, DPL=3, type=0xE (64-bit interrupt gate)
+    idt[num].attributes = 0xEE;
+    idt[num].isr_mid = (uint16_t)((base >> 16) & 0xFFFF);
+    idt[num].isr_high = (uint32_t)((base >> 32) & 0xFFFFFFFF);
+    idt[num].reserved = 0;
+}
+
 void idt_init() {
     idtr.limit = (uint16_t)sizeof(idt_entry_t) * 256 - 1;
     idtr.base = (uint64_t)&idt;
@@ -51,7 +63,8 @@ void idt_init() {
     idt_set_gate(32, (uint64_t)isr32);
     idt_set_gate(33, (uint64_t)isr33);
     idt_set_gate(44, (uint64_t)isr44);
-    idt_set_gate(0x80, (uint64_t)isr128); // Changed from isr0x80
+    // 0x80: syscall entry, must be callable from user space (DPL=3)
+    idt_set_gate_user(0x80, (uint64_t)isr128);
 
     pic_remap();
     load_idt(&idtr);
@@ -142,9 +155,15 @@ void syscall_handler(registers_t* regs) {
         case 1: // Syscall 1: kprintf
             kprintf((const char*)regs->rdi);
             break;
-
+            
         case 5: // Syscall 5: get_fb_info
             video_get_info((fb_info_t*)regs->rdi);
+            break;
+            
+        case 10: // Syscall 10: get_key
+            // Return scan code/char in RAX. 
+            // Since syscall_handler returns void, we mod regs->rax directly
+            regs->rax = (uint64_t)keyboard_get_key();
             break;
 
         case 60: // Syscall 60: exit

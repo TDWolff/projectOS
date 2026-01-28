@@ -22,6 +22,10 @@ static int buffer_idx = 0;
 
 static bool shell_visible = false;
 static bool last_mouse_button = false;
+static bool is_app_running = false;
+
+// Forward Declaration
+void run_program(const char* filename);
 
 void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
@@ -86,11 +90,81 @@ void shell_check_click() {
     
     if (clicked && !last_mouse_button) {
         if (mx >= btn_x && mx <= btn_x + 80 && my >= btn_y && my <= btn_y + 30) {
-            // Toggle visibility
-            shell_set_visible(!shell_visible);
+            // Clicked Terminal Button
+            shell_visible = true; // Enable shell logic
+            kprintf("\nAttempting to run terminal.pexe...\n");
+            run_program("terminal.pexe");
         }
     }
     last_mouse_button = clicked;
+}
+
+void run_program(const char* filename) {
+    file_t* f = initrd_open(filename);
+
+    if (f) {
+        is_app_running = true;
+        // Redraw desktop and window to ensure clean state
+        video_draw_desktop();
+        draw_shell_window();
+        video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
+        video_set_color(0xFFFFFFFF, 0x000000); // White text, Black bg
+
+        // Optional: show a very brief status message. Commented out so
+        // the user-space terminal owns the entire area and can draw its
+        // own welcome text and prompt without leftover kernel text.
+        // kprintf("Loading program '%s'...\n", filename);
+        
+        // 1. Create a new address space for the app
+        extern uint64_t p4_table[]; // Access kernel table
+        uint64_t* app_pagemap = vmm_create_address_space();
+
+        // 2. Allocate and map the app to 4GB (User Space Territory)
+        // We'll calculate how many pages we need
+        uint64_t num_pages = (f->size + PAGE_SIZE - 1) / PAGE_SIZE;
+        uint64_t app_virtual_base = 0x100000000;
+
+        for (uint64_t i = 0; i < num_pages; i++) {
+            void* physical_page = pmm_alloc();
+            // Map the app virtual address to the allocated physical page
+            // Crucial: Use PAGE_USER flag so the app can access its own memory!
+            vmm_map_page(app_pagemap, app_virtual_base + (i * PAGE_SIZE), (uint64_t)physical_page, PAGE_WRITABLE | PAGE_USER);
+            
+            // Copy data to the physical page
+            uint64_t copy_size = (i == num_pages - 1) ? (f->size % PAGE_SIZE) : PAGE_SIZE;
+            if (copy_size == 0) copy_size = PAGE_SIZE; // Handle exact multiples
+            memcpy(physical_page, (void*)(f->address + (i * PAGE_SIZE)), copy_size);
+        }
+
+        // 3. Switch to the new page map and jump!
+        uint64_t kernel_pagemap;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(kernel_pagemap));
+
+        vmm_switch_pagemap(app_pagemap);
+
+        void (*app_entry)(void) = (void*)app_virtual_base;
+        
+        // Debug print to confirm launch
+        // kprintf("Jumping to entry point at 0x%x\n", app_virtual_base);
+        
+        app_entry();
+        
+    // 4. Return to kernel address space
+    vmm_switch_pagemap((uint64_t*)kernel_pagemap);
+
+    is_app_running = false;
+
+    // 5. (Debug) Do NOT immediately redraw the desktop.
+    // Leaving the last app frame visible makes it easier to see
+    // whether the app actually ran or crashed instead of a quick flash.
+    // You can call video_draw_desktop() here later if you want a clean reset.
+        // shell_visible = true; // Ensure shell is visible after app return
+        // draw_shell_window();
+        // kprintf("\nProgram finished.");
+    } else {
+        kprintf("\nProgram not found: %s\n", filename);
+        shell_visible = false; // Reset if failed
+    }
 }
 
 void execute_command(char* input) {
@@ -102,52 +176,7 @@ void execute_command(char* input) {
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
         char* filename = input + 4;
-        file_t* f = initrd_open(filename);
-
-        if (f) {
-            kprintf("\nLoading program '%s'...\n", filename);
-            
-            // 1. Create a new address space for the app
-            extern uint64_t p4_table[]; // Access kernel table
-            uint64_t* app_pagemap = vmm_create_address_space();
-
-            // 2. Allocate and map the app to 4GB (User Space Territory)
-            // We'll calculate how many pages we need
-            uint64_t num_pages = (f->size + PAGE_SIZE - 1) / PAGE_SIZE;
-            uint64_t app_virtual_base = 0x100000000;
-
-            for (uint64_t i = 0; i < num_pages; i++) {
-                void* physical_page = pmm_alloc();
-                // Map the app virtual address to the allocated physical page
-                // Crucial: Use PAGE_USER flag so the app can access its own memory!
-                vmm_map_page(app_pagemap, app_virtual_base + (i * PAGE_SIZE), (uint64_t)physical_page, PAGE_WRITABLE | PAGE_USER);
-                
-                // Copy data to the physical page
-                uint64_t copy_size = (i == num_pages - 1) ? (f->size % PAGE_SIZE) : PAGE_SIZE;
-                if (copy_size == 0) copy_size = PAGE_SIZE; // Handle exact multiples
-                memcpy(physical_page, (void*)(f->address + (i * PAGE_SIZE)), copy_size);
-            }
-
-            // 3. Switch to the new page map and jump!
-            uint64_t kernel_pagemap;
-            __asm__ volatile("mov %%cr3, %0" : "=r"(kernel_pagemap));
-
-            vmm_switch_pagemap(app_pagemap);
-
-            void (*app_entry)(void) = (void*)app_virtual_base;
-            app_entry();
-            
-            // 4. Return to kernel address space
-            vmm_switch_pagemap((uint64_t*)kernel_pagemap);
-
-            // 5. Force a full screen redraw to clear the app's mess
-            video_draw_desktop();
-            shell_visible = true; // Ensure shell is visible after app return
-            draw_shell_window();
-            kprintf("\nProgram finished.");
-        } else {
-            kprintf("\nProgram not found: %s", filename);
-        }
+        run_program(filename);
     }
     // 2. LS (List Files)
     else if (strcmp(input, "ls") == 0) {
@@ -201,6 +230,10 @@ void execute_command(char* input) {
 }
 
 void shell_update(char c) {
+    // Do not process kernel shell commands if an app is running
+    // The app will read the keystrokes via syscalls instead.
+    if (is_app_running) return;
+
     shell_check_click();
     
     if (!shell_visible) return;

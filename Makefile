@@ -38,7 +38,7 @@ limine/limine:
 	$(CC) -O2 limine/limine.c -o limine/limine
 
 # Create ISO
-iso: kernel.bin limine/limine
+iso: kernel.bin limine/limine terminal_app
 	# 1. Start with a clean slate
 	rm -rf iso_root
 	mkdir -p iso_root/boot
@@ -75,11 +75,14 @@ iso: kernel.bin limine/limine
 		iso_root -o os.iso
 	./limine/limine bios-install os.iso
 
-run: app iso
+run: app terminal_app iso
 	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa
 
 app:
 	make -f Makefile.apps
+
+terminal_app:
+	make -f Makefile.apps APP_NAME=terminal
 
 clean:
 	find . -type f -name "*.o" -delete
@@ -87,3 +90,4 @@ clean:
 	rm -rf iso_root
 	rm -f apps/*.o
 	rm -f ../osstorage/stress_test.pexe
+	rm -f osstorage/terminal.pexe

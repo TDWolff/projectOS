@@ -2,7 +2,9 @@ CC = clang
 LD = x86_64-elf-ld
 
 # 1. Flags
-CFLAGS = -target x86_64-pc-none-elf -ffreestanding -nostdlib -O2 -Wall -mno-red-zone -mcmodel=large
+CFLAGS = -target x86_64-pc-none-elf -ffreestanding -nostdlib -O2 -Wall -mno-red-zone -mcmodel=large \
+         -mno-sse -mno-sse2 -mno-avx -mno-80387 -msoft-float \
+         -I../src/include
 LDFLAGS = -m elf_x86_64 -T apps/app.ld
 
 APP_NAME = stress_test

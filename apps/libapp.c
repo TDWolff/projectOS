@@ -30,3 +30,14 @@ void sys_exit() {
         : "memory"
     );
 }
+
+char sys_get_key() {
+    char c;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(c)
+        : "a"(10) /* Syscall 10 = Get Key */
+        : "memory"
+    );
+    return c;
+}

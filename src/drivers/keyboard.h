@@ -5,5 +5,6 @@
 
 void keyboard_init();
 void keyboard_handler();
+char keyboard_get_key();
 
 #endif
