@@ -5,6 +5,7 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../mem/vmm.h"
+#include "shell.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -13,7 +14,7 @@ static uint32_t fb_pitch = 0;
 static uint32_t cursor_x = 0;
 static uint32_t cursor_y = 0;
 static uint32_t fg_color = 0xFFFFFFFF; 
-static uint32_t bg_color = 0x00000000; 
+static uint32_t bg_color = 0x00808080; // Default to Teal background
 
 static font_t loaded_font = {0};
 
@@ -100,33 +101,56 @@ void video_init(void* mb_info) {
 void kprint_char(char c) {
     if (!fb_addr || !loaded_font.glyph_buffer) return;
 
+    // Boundary logic for Windowed Shell
+    uint32_t area_x = 0;
+    uint32_t area_y = 0;
+    uint32_t area_w = fb_width;
+    uint32_t area_h = fb_height;
+
+    // Use SHELL constants if they exist (we'll assume they do or use defaults)
+    // Note: In a real system we'd pass a 'window' context, 
+    // but for now we'll just hardcode the check.
+    if (cursor_x >= 200 && cursor_x <= 800 && cursor_y >= 150 && cursor_y <= 550) {
+        area_x = 205; // 5px padding
+        area_y = 180; // Below title bar
+        area_w = 590;
+        area_h = 365;
+    }
+
     if (c == '\n') {
-        cursor_x = 0;
         cursor_y += loaded_font.height;
+        cursor_x = area_x;
     } else if (c == '\b') {
-        if (cursor_x >= loaded_font.width) {
-            cursor_x -= loaded_font.width;
-            draw_rect(cursor_x, cursor_y, loaded_font.width, loaded_font.height, bg_color);
+        // Backspace handling
+        if (cursor_x > area_x) {
+            cursor_x -= 8; // Assuming 8px wide font
+            draw_rect(cursor_x, cursor_y, 8, loaded_font.height, bg_color);
         }
     } else {
         uint8_t* glyph = (uint8_t*)loaded_font.glyph_buffer + (c * loaded_font.bytes_per_glyph);
-        uint32_t bytes_per_row = (loaded_font.width + 7) / 8;
-
-        for (uint32_t y = 0; y < loaded_font.height; y++) {
-            for (uint32_t x = 0; x < loaded_font.width; x++) {
-                if ((glyph[y * bytes_per_row + (x / 8)] >> (7 - (x % 8))) & 1)
-                    putpixel(cursor_x + x, cursor_y + y, fg_color);
-                else
-                    putpixel(cursor_x + x, cursor_y + y, bg_color);
+        
+        for (uint32_t cy = 0; cy < loaded_font.height; cy++) {
+            for (uint32_t cx = 0; cx < 8; cx++) {
+                if (glyph[cy] & (0x80 >> cx)) {
+                    putpixel(cursor_x + cx, cursor_y + cy, fg_color);
+                }
             }
         }
-        cursor_x += loaded_font.width;
-        if (cursor_x >= fb_width) { cursor_x = 0; cursor_y += loaded_font.height; }
+        cursor_x += 8;
     }
 
-    // SCROLLING: If we hit the bottom, move the screen up
-    if (cursor_y >= fb_height - loaded_font.height) {
-        terminal_scroll();
+    // Wrap text within the area
+    if (cursor_x >= area_x + area_w) {
+        cursor_x = area_x;
+        cursor_y += loaded_font.height;
+    }
+
+    // SCROLLING: If we hit the bottom of the area, move up
+    if (cursor_y >= area_y + area_h - loaded_font.height) {
+        // Simplified: just reset to top of window for now
+        cursor_y = area_y;
+        // In a full OS we'd blit the window up
+        draw_rect(area_x, area_y, area_w, area_h, 0x000000); 
     }
 }
 
@@ -137,9 +161,27 @@ void kprint(const char* str) {
 void terminal_clear() {
     if (!fb_addr) return;
     draw_rect(0, 0, fb_width, fb_height, bg_color);
-    cursor_x = 0;
-    cursor_y = 0;
+    // Position cursor at shell window start
+    cursor_x = 205; 
+    cursor_y = 185;
 }
+
+void terminal_set_bg(uint32_t color) {
+    bg_color = color;
+}
+
+void video_set_cursor(int x, int y) {
+    cursor_x = x;
+    cursor_y = y;
+}
+
+void video_set_color(uint32_t fg, uint32_t bg) {
+    fg_color = fg;
+    bg_color = bg;
+}
+
+uint32_t get_fb_width() { return fb_width; }
+uint32_t get_fb_height() { return fb_height; }
 
 uint32_t getpixel(int x, int y) {
     if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
@@ -163,6 +205,49 @@ void video_get_info(fb_info_t* info) {
     info->width = fb_width;
     info->height = fb_height;
     info->pitch = fb_pitch;
+}
+
+void video_draw_text(int x, int y, const char* str, uint32_t color) {
+    uint32_t old_x = cursor_x;
+    uint32_t old_y = cursor_y;
+    uint32_t old_fg = fg_color;
+
+    cursor_x = x;
+    cursor_y = y;
+    fg_color = color;
+
+    kprint(str);
+
+    cursor_x = old_x;
+    cursor_y = old_y;
+    fg_color = old_fg;
+}
+
+void video_draw_desktop() {
+    if (!fb_addr) return;
+    
+    // Classic Windows 95 Teal: #008080
+    uint32_t desktop_color = 0x008080; 
+    uint32_t taskbar_color = 0xC0C0C0; 
+
+    // 1. Fill the screen with the wallpaper color
+    draw_rect(0, 0, fb_width, fb_height, desktop_color);
+
+    // 2. Draw a Taskbar at the bottom (40 pixels high)
+    draw_rect(0, fb_height - 40, fb_width, 40, taskbar_color);
+
+    // 3. Draw a "Start" button (Darker Gray)
+    // We'll draw it slightly "raised"
+    draw_rect(5, fb_height - 35, 80, 30, 0xD0D0D0); // Main body
+    draw_rect(5, fb_height - 35, 80, 2, 0xFFFFFF);  // Top highlight
+    draw_rect(5, fb_height - 35, 2, 30, 0xFFFFFF);  // Left highlight
+
+    // Draw "Terminal" text on the button
+    video_draw_text(12, fb_height - 28, "Terminal", 0x000000);
+    
+    // Reset cursor for shell text (in the middle of the screen window)
+    cursor_x = 205;
+    cursor_y = 185;
 }
 
 void video_blit_8x8(int x, int y, uint32_t* data) {

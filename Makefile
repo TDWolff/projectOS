@@ -75,7 +75,7 @@ iso: kernel.bin limine/limine
 		iso_root -o os.iso
 	./limine/limine bios-install os.iso
 
-run: iso app
+run: app iso
 	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa
 
 app:

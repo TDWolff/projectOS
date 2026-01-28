@@ -30,12 +30,11 @@ typedef struct {
     uint32_t width;         // Width in pixels
 } __attribute__((packed)) psf2_header_t;
 
-// Unified Font Struct
 typedef struct {
-    void* glyph_buffer;
     uint32_t width;
     uint32_t height;
     uint32_t bytes_per_glyph;
+    void* glyph_buffer;
 } font_t;
 
 #endif

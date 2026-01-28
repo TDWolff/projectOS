@@ -49,6 +49,10 @@ void kprintf(const char* format, ...) {
         i++; // Skip the %
         
         switch (format[i]) {
+            case '%': {
+                kprint_char('%');
+                break;
+            }
             case 'c': {
                 char c = (char)va_arg(args, int);
                 kprint_char(c);
