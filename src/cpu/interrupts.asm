@@ -39,6 +39,12 @@ ISR_NOERRCODE 32 ; Timer
 ISR_NOERRCODE 33 ; Keyboard
 ISR_NOERRCODE 44 ; Mouse IRQ 12 mapped to 44
 
+global isr128
+isr128:
+    push qword 0
+    push qword 0x80
+    jmp isr_common
+
 load_idt:
     lidt [rdi]
     sti

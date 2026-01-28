@@ -1,0 +1,32 @@
+CC = clang
+LD = x86_64-elf-ld
+
+# 1. Flags
+CFLAGS = -target x86_64-pc-none-elf -ffreestanding -nostdlib -O2 -Wall -mno-red-zone -mcmodel=large
+LDFLAGS = -m elf_x86_64 -T apps/app.ld
+
+APP_NAME = stress_test
+APP_SRC = apps/$(APP_NAME).c
+APP_OBJ = apps/$(APP_NAME).o
+
+# NEW: Define the user library
+LIB_SRC = apps/libapp.c
+LIB_OBJ = apps/libapp.o
+
+DEST_DIR = osstorage
+
+all: $(DEST_DIR)/$(APP_NAME).pexe
+
+$(DEST_DIR)/$(APP_NAME).pexe: apps/$(APP_NAME).pexe
+	@mkdir -p $(DEST_DIR)
+	mv $< $@
+
+apps/$(APP_NAME).pexe: $(APP_OBJ) $(LIB_OBJ)
+	$(LD) $(LDFLAGS) -o $@ $(APP_OBJ) $(LIB_OBJ)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f apps/*.o apps/*.pexe
+	rm -f $(DEST_DIR)/*.pexe

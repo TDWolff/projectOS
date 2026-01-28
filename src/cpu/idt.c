@@ -24,8 +24,10 @@ const char *exception_messages[] = {
 };
 
 extern void isr0(); extern void isr8(); extern void isr13();
-extern void isr14(); extern void isr32(); extern void isr33(); extern void isr44();
+extern void isr14(); extern void isr32(); extern void isr33(); extern void isr44(); 
+extern void isr128(); // Changed from isr0x80
 extern void load_idt(idtr_t*);
+void syscall_handler(registers_t* regs);
 
 void idt_set_gate(uint8_t num, uint64_t base) {
     idt[num].isr_low = (uint16_t)(base & 0xFFFF);
@@ -48,6 +50,7 @@ void idt_init() {
     idt_set_gate(32, (uint64_t)isr32);
     idt_set_gate(33, (uint64_t)isr33);
     idt_set_gate(44, (uint64_t)isr44);
+    idt_set_gate(0x80, (uint64_t)isr128); // Changed from isr0x80
 
     pic_remap();
     load_idt(&idtr);
@@ -83,12 +86,17 @@ void kpanic(registers_t* regs, const char* reason) {
 
 uint64_t isr_handler(uint64_t* stack_ptr) {
     registers_t* regs = (registers_t*)stack_ptr;
+    uint64_t return_rsp = (uint64_t)stack_ptr;
 
     // Send EOI immediately
     if (regs->int_no >= 32) {
         if (regs->int_no >= 40) outb(0xA0, 0x20);
         outb(0x20, 0x20);
     }
+
+    if (regs->int_no == 0x80) {
+        syscall_handler(regs);
+    } 
 
     if (regs->int_no < 32) {
         kpanic(regs, "CPU_EXCEPTION");
@@ -109,9 +117,7 @@ uint64_t isr_handler(uint64_t* stack_ptr) {
         return (uint64_t)stack_ptr;
     }
 
-    // For Keyboard and Mouse, always return the SAME stack (no task switch)
-    // This prevents the flicker!
-    return (uint64_t)stack_ptr; 
+    return return_rsp;
 }
 
 void pic_remap() {
@@ -126,4 +132,25 @@ void pic_remap() {
 
     outb(0x21, 0xF8); // Timer(0), Keyboard(1), SlaveBridge(2)
     outb(0xA1, 0xEF); // Mouse(12)
+}
+
+void syscall_handler(registers_t* regs) {
+    // The user app puts the syscall number in RAX
+    // Arguments are passed in RDI, RSI, RDX, etc.
+    switch (regs->rax) {
+        case 1: // Syscall 1: kprintf
+            kprintf((const char*)regs->rdi);
+            break;
+
+        case 2:
+            return;
+        
+        case 60: // Syscall 60: exit
+            kprintf("\n[Process Exited with code %d]\n", regs->rdi);
+            break;
+
+        default:
+            kprintf("Unknown syscall: %d\n", regs->rax);
+            break;
+    }
 }

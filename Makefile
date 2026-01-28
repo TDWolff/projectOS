@@ -75,10 +75,15 @@ iso: kernel.bin limine/limine
 		iso_root -o os.iso
 	./limine/limine bios-install os.iso
 
-run: iso
+run: iso app
 	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa
+
+app:
+	make -f Makefile.apps
 
 clean:
 	find . -type f -name "*.o" -delete
 	rm -f kernel.bin os.iso
 	rm -rf iso_root
+	rm -f apps/*.o
+	rm -f ../osstorage/stress_test.pexe
