@@ -7,6 +7,8 @@
 #include "../include/ports.h"
 #include "../drivers/mouse.h"
 #include "../mem/vmm.h"
+#include "../fs/initrd.h"  // Added for file syscalls
+#include "../lib/string.h" // Added for memcpy
 
 void pic_remap(); 
 
@@ -168,6 +170,34 @@ void syscall_handler(registers_t* regs) {
 
         case 60: // Syscall 60: exit
             kprintf("\n[Process Exited with code %d]\n", regs->rdi);
+            break;
+
+        case 20: // Syscall 20: list_files
+            // rdi = pointer to user buffer for file_t array
+            if (regs->rdi) {
+                file_t* files = initrd_get_files();
+                // Copy MAX_FILES * sizeof(file_t) to user buffer
+                memcpy((void*)regs->rdi, files, sizeof(file_t) * MAX_FILES);
+            }
+            break;
+
+        case 21: // Syscall 21: read_file
+            // rdi = filename, rsi = buffer, rdx = max_size
+            // returns bytes read in rax, or -1 if not found
+            if (regs->rdi && regs->rsi) {
+                char* filename = (char*)regs->rdi;
+                file_t* f = initrd_open(filename);
+                if (f) {
+                    uint64_t bytes_to_copy = f->size;
+                    if (bytes_to_copy > regs->rdx) bytes_to_copy = regs->rdx;
+                    
+                    // Dangerous: copying directly to user pointer without check, but okay for now
+                    memcpy((void*)regs->rsi, (void*)f->address, bytes_to_copy);
+                    regs->rax = bytes_to_copy;
+                } else {
+                     regs->rax = -1; // Error
+                }
+            }
             break;
 
         default:

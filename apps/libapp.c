@@ -41,3 +41,23 @@ char sys_get_key() {
     );
     return c;
 }
+
+void sys_list_files(file_t* buffer) {
+    __asm__ volatile (
+        "int $0x80"
+        : 
+        : "a"(20), "D"(buffer)
+        : "memory"
+    );
+}
+
+int sys_read_file(const char* filename, char* buffer, int max_size) {
+    int bytes_read;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(bytes_read)
+        : "a"(21), "D"(filename), "S"(buffer), "d"(max_size)
+        : "memory"
+    );
+    return bytes_read;
+}

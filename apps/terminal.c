@@ -41,12 +41,63 @@ void kprint_char(char c) {
     sys_kprintf(str);
 }
 
+// Simple itoa for numbers (needed for LS)
+void itoa(unsigned long long n, char* str) {
+    if (n == 0) {
+        str[0] = '0';
+        str[1] = '\0';
+        return;
+    }
+    int i = 0;
+    unsigned long long temp = n;
+    while (temp != 0) {
+        i++;
+        temp /= 10;
+    }
+    str[i] = '\0';
+    while (n != 0) {
+        str[--i] = (n % 10) + '0';
+        n /= 10;
+    }
+}
+
 void execute_command(char* input) {
     if (strcmp(input, "help") == 0) {
-        kprint("\nAvailable commands: help, exit, echo <text>, version");
+        kprint("\nAvailable commands: help, exit, echo <text>, version, ls, cat <file>");
     }
     else if (strcmp(input, "exit") == 0) {
         sys_exit();
+    }
+    else if (strcmp(input, "ls") == 0) {
+         file_t files[MAX_FILES];
+         sys_list_files(files);
+         kprint("\n--- User Space Filesystem ---\n");
+         for (int i = 0; i < MAX_FILES; i++) {
+             if (files[i].exists) {
+                 kprint(files[i].name);
+                 kprint(" (");
+                 char size_buf[32];
+                 itoa(files[i].size, size_buf);
+                 kprint(size_buf);
+                 kprint(" bytes)\n");
+             }
+         }
+    }
+    else if (input[0] == 'c' && input[1] == 'a' && input[2] == 't' && input[3] == ' ') {
+         char* filename = input + 4; // Skip "cat "
+         // Should allocate larger buffer for big files, but stack is safe enough for small ones
+         char buffer[1024]; 
+         int bytes = sys_read_file(filename, buffer, 1023);
+         
+         if (bytes >= 0) {
+             buffer[bytes] = '\0'; // Null terminate
+             kprint("\n");
+             kprint(buffer);
+             kprint("\n");
+         } else {
+             kprint("\nFile not found: ");
+             kprint(filename);
+         }
     }
     else if (strcmp(input, "version") == 0) {
         kprint("\nProjectOS Terminal v1.0 (User Space Edition)");
