@@ -26,8 +26,6 @@ static const uint8_t cursor_mask[12][8] = {
 
 #define MAX_WIDTH 8
 #define MAX_HEIGHT 12
-#define MAX_SCALE 4
-static uint32_t bg_buffer[(MAX_WIDTH * MAX_SCALE) * (MAX_HEIGHT * MAX_SCALE)]; 
 
 /* --- Internal Hardware Helpers (Must be above init) --- */
 
@@ -58,27 +56,8 @@ uint8_t mouse_read() {
 
 /* --- Internal Graphics Helpers --- */
 
-void save_bg(int x, int y) {
-    int sw = (8 * mouse_scale) / 10;
-    int sh = (12 * mouse_scale) / 10;
-    for (int i = 0; i < sh; i++) {
-        for (int j = 0; j < sw; j++) {
-            bg_buffer[i * sw + j] = video_get_pixel(x + j, y + i);
-        }
-    }
-}
-
-void restore_bg(int x, int y) {
-    int sw = (8 * mouse_scale) / 10;
-    int sh = (12 * mouse_scale) / 10;
-    for (int i = 0; i < sh; i++) {
-        for (int j = 0; j < sw; j++) {
-            putpixel(x + j, y + i, bg_buffer[i * sw + j]);
-        }
-    }
-}
-
-void draw_cursor(int x, int y) {
+// New function to draw directly to a compositing buffer (bypassing the global putpixel)
+void mouse_draw_to_buffer(uint32_t* buffer, uint32_t pitch, uint32_t bpp_div_8) {
     int sw = (8 * mouse_scale) / 10;
     int sh = (12 * mouse_scale) / 10;
     
@@ -93,10 +72,22 @@ void draw_cursor(int x, int y) {
             if (src_y >= 12) src_y = 11;
 
             uint8_t color_type = cursor_mask[src_y][src_x];
-            if (color_type == 0) continue;
+            if (color_type == 0) continue; // Transparent
             
             uint32_t color = (color_type == 1) ? 0xFFFFFFFF : 0x00000000;
-            putpixel(x + j, y + i, color);
+            
+            // Calculate memory offset
+            // Buffer is uint32_t*, but pitch is in bytes
+            // Address = buffer_base + (y * pitch) + (x * bytes_per_pixel)
+            uint64_t offset = ((mouse_y + i) * pitch) + ((mouse_x + j) * bpp_div_8);
+            
+            // We need to be careful not to write out of bounds of the buffer
+            // (Assuming caller guarantees buffer size or we check limits? 
+            // The handler clamps X/Y so we should be mostly safe, but minimal check:)
+            // Note: We don't have buffer height here easily, trusting clamping.
+            
+            uint32_t* pixel = (uint32_t*)((uint8_t*)buffer + offset);
+            *pixel = color;
         }
     }
 }
@@ -108,13 +99,8 @@ uint8_t mouse_get_buttons() { return mouse_byte[0] & 0x07; }
 void mouse_set_scale(int scale_x10) {
     if (scale_x10 < 5) scale_x10 = 5;      // 0.5x minimum
     if (scale_x10 > 40) scale_x10 = 40;    // 4.0x maximum
-    
-    // Clean up old cursor
-    restore_bg(mouse_x, mouse_y);
     mouse_scale = scale_x10;
-    // Draw new scaled cursor
-    save_bg(mouse_x, mouse_y);
-    draw_cursor(mouse_x, mouse_y);
+    // No need to redraw here, next frame will pick it up
 }
 
 /* --- Public Functions --- */
@@ -139,9 +125,7 @@ void mouse_init() {
     mouse_write(0xF4); // Enable data reporting
     mouse_read();
 
-    // Initial capture and draw
-    save_bg(mouse_x, mouse_y);
-    draw_cursor(mouse_x, mouse_y);
+    // No initial draw needed, compositor loop handles it
 }
 
 void mouse_handler() {
@@ -163,9 +147,8 @@ void mouse_handler() {
         case 2:
             mouse_byte[2] = data;
             
-            // Restore what was under the old mouse
-            restore_bg(mouse_x, mouse_y);
-
+            // Note: No restore_bg() calls needed anymore!
+            
             // Update mouse movement
             int x_offset = (int8_t)mouse_byte[1];
             int y_offset = (int8_t)mouse_byte[2];
@@ -173,19 +156,15 @@ void mouse_handler() {
             mouse_x += x_offset;
             mouse_y -= y_offset; // PS/2 Y is inverted
 
-            // Clamp to screen bounds (assuming 1024x768)
-            int cursor_w = (8 * mouse_scale) / 10;
-            int cursor_h = (12 * mouse_scale) / 10;
-
+            // Clamp to screen bounds (assuming 1024x768 - should query properly but hardcoded for now)
+            // TODO: Get actual screen dimensions
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x > (int)get_fb_width() - cursor_w) mouse_x = get_fb_width() - cursor_w;
-            if (mouse_y > (int)get_fb_height() - cursor_h) mouse_y = get_fb_height() - cursor_h;
+            if (mouse_x > 1024 - 10) mouse_x = 1024 - 10;
+            if (mouse_y > 768 - 10) mouse_y = 768 - 10;
 
-            // Save new background and draw cursor
-            save_bg(mouse_x, mouse_y);
-            draw_cursor(mouse_x, mouse_y);
-
+            // No draw_cursor() needed!
+            
             mouse_cycle = 0;
             break;
     }

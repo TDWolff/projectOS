@@ -36,6 +36,9 @@ typedef struct {
 void video_get_info(fb_info_t* info);
 void video_draw_desktop();
 
+// Flush the backbuffer to the screen
+void video_swap();
+
 #define VGA_COLOR_BLACK 0
 #define VGA_COLOR_BLUE 1
 #define VGA_COLOR_RED 4

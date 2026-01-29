@@ -6,6 +6,7 @@
 #include "../lib/string.h"
 #include "../mem/vmm.h"
 #include "shell.h"
+#include "compositor.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -16,11 +17,22 @@ static uint32_t cursor_y = 0;
 static uint32_t fg_color = 0xFFFFFFFF; 
 static uint32_t bg_color = 0x00808080; // Default to Teal background
 
+// Helper to get draw target (Backbuffer if enabled, else Frontbuffer)
+static uint32_t* get_draw_buffer() {
+    uint32_t* bb = (uint32_t*)compositor_get_backbuffer();
+    if (bb) return bb;
+    return fb_addr;
+}
+
 static font_t loaded_font = {0};
 
 void putpixel(int x, int y, uint32_t color) {
-    if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
-    uint32_t* pixel = (uint32_t*)((uint8_t*)fb_addr + (y * fb_pitch) + (x * 4));
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
+    
+    // Note: if backbuffer is tightly packed (width*4) vs pitch-aligned, check implementation.
+    // Assuming backbuffer uses same structure as screen (including pitch padding).
+    uint32_t* pixel = (uint32_t*)((uint8_t*)buffer + (y * fb_pitch) + (x * 4));
     *pixel = color;
 }
 
@@ -35,18 +47,19 @@ void draw_rect(int x, int y, int w, int h, uint32_t color) {
 
 // New: Move all pixels up by one font height
 void terminal_scroll() {
-    if (!fb_addr || !loaded_font.height) return;
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer || !loaded_font.height) return;
 
     uint64_t font_height = loaded_font.height;
-    uint8_t* dst = (uint8_t*)fb_addr;
-    uint8_t* src = (uint8_t*)fb_addr + (font_height * fb_pitch);
+    uint8_t* dst = (uint8_t*)buffer;
+    uint8_t* src = (uint8_t*)buffer + (font_height * fb_pitch);
     uint64_t size_to_copy = (fb_height - font_height) * fb_pitch;
 
     // Move the screen up
     memcpy(dst, src, size_to_copy);
 
     // Clear the bottom line
-    uint32_t* bottom_line = (uint32_t*)((uint8_t*)fb_addr + (fb_height - font_height) * fb_pitch);
+    uint32_t* bottom_line = (uint32_t*)((uint8_t*)buffer + (fb_height - font_height) * fb_pitch);
     for (uint32_t i = 0; i < (font_height * fb_pitch) / 4; i++) {
         bottom_line[i] = bg_color;
     }
@@ -69,6 +82,14 @@ void video_init(void* mb_info) {
             break;
         }
     }
+    
+    // Initialize Double Buffering
+    if (fb_addr) {
+        // Initialize heap first if not already done in kernel.c, but here we assume it's ready
+        // video_init is called after heap_init in kernel.c
+        compositor_init(fb_width, fb_height, fb_pitch);
+    }
+
     if (!fb_addr) return;
 
     terminal_clear();
@@ -236,55 +257,17 @@ void video_draw_desktop() {
     // 2. Draw a Taskbar at the bottom (40 pixels high)
     draw_rect(0, fb_height - 40, fb_width, 40, taskbar_color);
 
-    // 3. Draw a "Start" button (Darker Gray)
-    // We'll draw it slightly "raised"
-    draw_rect(5, fb_height - 35, 80, 30, 0xD0D0D0); // Main body
-    draw_rect(5, fb_height - 35, 80, 2, 0xFFFFFF);  // Top highlight
-    draw_rect(5, fb_height - 35, 2, 30, 0xFFFFFF);  // Left highlight
-
-    // Draw Custom Terminal Icon (16x13)
-    // 0: Black, 1: Gray (0x808080), 2: White (0xFFFFFF), 3: Transparent (0xD0D0D0)
-    int icon_w = 16;
-    int icon_h = 13;
-    int icon_data[13][16] = {
-        {3,3,1,1,1,1,1,1,1,1,1,1,1,1,3,3},
-        {3,1,0,0,0,0,0,0,0,0,0,0,0,0,1,3},
-        {1,0,2,2,0,0,0,0,0,0,0,0,0,0,0,1}, // "C"
-        {1,0,2,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,0,0,2,0,2,0,0,0,0,0,0,1}, // ":\" 
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,2,2,2,2,2,0,0,0,0,0,1}, // Text lines
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,2,2,0,0,0,0,0,0,0,0,1},
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,0,0,0,0,0,0,0,0,0,0,1}, 
-        {3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3},
-        {3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3}
-    };
-
-    int icon_x = 5 + (80 - icon_w) / 2; // Center in button (width 80)
-    int icon_y = (fb_height - 35) + (30 - icon_h) / 2; // Center in button (height 30)
-
-    for (int y = 0; y < icon_h; y++) {
-        for (int x = 0; x < icon_w; x++) {
-            uint32_t color = 0xD0D0D0;
-            if (icon_data[y][x] == 0) color = 0x000000;
-            else if (icon_data[y][x] == 1) color = 0x808080;
-            else if (icon_data[y][x] == 2) color = 0xFFFFFF;
-            
-            putpixel(icon_x + x, icon_y + y, color);
-        }
-    }
-
     // Reset cursor for shell text (in the middle of the screen window)
     cursor_x = 205;
     cursor_y = 185;
 }
 
 void video_blit_8x8(int x, int y, uint32_t* data) {
-    if (!fb_addr) return;
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer) return;
+    
     // fb_pitch is in bytes, fb_addr is uint32_t*
-    uint8_t* screen_ptr = (uint8_t*)fb_addr + (y * fb_pitch) + (x * 4);
+    uint8_t* screen_ptr = (uint8_t*)buffer + (y * fb_pitch) + (x * 4);
     
     for (int i = 0; i < 8; i++) {
         uint32_t* line_dst = (uint32_t*)screen_ptr;
@@ -296,6 +279,12 @@ void video_blit_8x8(int x, int y, uint32_t* data) {
 }
 
 uint32_t video_get_pixel(int x, int y) {
-    if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
-    return *(uint32_t*)((uint8_t*)fb_addr + (y * fb_pitch) + (x * 4));
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
+    return *(uint32_t*)((uint8_t*)buffer + (y * fb_pitch) + (x * 4));
+}
+
+// Function to flush frame
+void video_swap() {
+    compositor_swap_buffers();
 }

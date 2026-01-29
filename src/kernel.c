@@ -30,6 +30,11 @@ void kernel_main(void* mb_info) {
 
     while(1) { 
         shell_check_click(); // Keep checking for mouse clicks on the taskbar
-        __asm__ volatile ("hlt"); 
+        
+        // Refresh the screen from double buffer
+        video_swap();
+        
+        // Removed hlt so we refresh comfortably, or use a timer interrupt to drive this
+        // __asm__ volatile ("hlt"); 
     }
 }

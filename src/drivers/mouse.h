@@ -5,7 +5,8 @@
 
 void mouse_init();
 void mouse_handler();
-void draw_mouse_cursor(int x, int y);
+void mouse_draw_to_buffer(uint32_t* buffer, uint32_t pitch, uint32_t bpp_div_8);
+
 void mouse_set_scale(int scale_x10);
 
 int mouse_get_x();
