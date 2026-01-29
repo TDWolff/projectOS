@@ -261,40 +261,9 @@ void video_draw_desktop() {
     draw_rect(5, fb_height - 35, 80, 2, 0xFFFFFF);  // Top highlight
     draw_rect(5, fb_height - 35, 2, 30, 0xFFFFFF);  // Left highlight
 
-    // Draw Custom Terminal Icon (16x13)
-    // 0: Black, 1: Gray (0x808080), 2: White (0xFFFFFF), 3: Transparent (0xD0D0D0)
-    int icon_w = 16;
-    int icon_h = 13;
-    int icon_data[13][16] = {
-        {3,3,1,1,1,1,1,1,1,1,1,1,1,1,3,3},
-        {3,1,0,0,0,0,0,0,0,0,0,0,0,0,1,3},
-        {1,0,2,2,0,0,0,0,0,0,0,0,0,0,0,1}, // "C"
-        {1,0,2,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,0,0,2,0,2,0,0,0,0,0,0,1}, // ":\" 
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,2,2,2,2,2,0,0,0,0,0,1}, // Text lines
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,2,2,0,0,0,0,0,0,0,0,1},
-        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
-        {1,0,2,2,2,0,0,0,0,0,0,0,0,0,0,1}, 
-        {3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3},
-        {3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3}
-    };
-
-    int icon_x = 5 + (80 - icon_w) / 2; // Center in button (width 80)
-    int icon_y = (fb_height - 35) + (30 - icon_h) / 2; // Center in button (height 30)
-
-    for (int y = 0; y < icon_h; y++) {
-        for (int x = 0; x < icon_w; x++) {
-            uint32_t color = 0xD0D0D0;
-            if (icon_data[y][x] == 0) color = 0x000000;
-            else if (icon_data[y][x] == 1) color = 0x808080;
-            else if (icon_data[y][x] == 2) color = 0xFFFFFF;
-            
-            putpixel(icon_x + x, icon_y + y, color);
-        }
-    }
-
+    // Draw "Terminal" text on the button
+    video_draw_text(12, fb_height - 28, "Terminal", 0x000000);
+    
     // Reset cursor for shell text (in the middle of the screen window)
     cursor_x = 205;
     cursor_y = 185;
