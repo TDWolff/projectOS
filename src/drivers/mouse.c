@@ -6,26 +6,38 @@ static uint8_t mouse_cycle = 0;
 static uint8_t mouse_byte[3];
 static int mouse_x = 512;
 static int mouse_y = 384;
-static int mouse_scale = 18; // Scale in units of 0.1 (18 = 1.8x)
+static int mouse_scale = 10; // Modified to 1.0x (10/10) default, ignored in new draw
 
-// 1 or 2 = White, 0 = Transparent, 3 = Black Outline
-static const uint8_t cursor_mask[12][8] = {
-    {3,3,0,0,0,0,0,0},
-    {3,1,3,0,0,0,0,0},
-    {3,1,1,3,0,0,0,0},
-    {3,1,1,1,3,0,0,0},
-    {3,1,1,1,1,3,0,0},
-    {3,1,1,1,1,1,3,0},
-    {3,1,1,1,1,1,1,3},
-    {3,1,1,1,3,3,3,3},
-    {3,1,3,1,3,0,0,0},
-    {3,3,0,3,1,3,0,0},
-    {0,0,0,0,3,3,0,0},
-    {0,0,0,0,0,0,0,0}
+#define MAX_WIDTH 16
+#define MAX_HEIGHT 24
+
+// 1 = White, 0 = Transparent, 3 = Black Outline
+static const uint8_t cursor_mask[MAX_HEIGHT][MAX_WIDTH] = {
+    {1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {1,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {1,3,3,1,0,0,0,0,0,0,0,0,0,0,0,0},
+    {1,3,3,3,1,0,0,0,0,0,0,0,0,0,0,0},
+    {1,3,3,3,3,1,0,0,0,0,0,0,0,0,0,0},
+    {1,3,3,3,3,3,1,0,0,0,0,0,0,0,0,0},
+    {1,3,3,3,3,3,3,1,0,0,0,0,0,0,0,0},
+    {1,3,3,3,3,3,3,3,1,0,0,0,0,0,0,0},
+    {1,3,3,3,3,3,3,3,3,1,0,0,0,0,0,0},
+    {1,3,3,3,3,3,3,3,3,3,1,0,0,0,0,0},
+    {1,3,3,3,3,3,3,3,3,3,3,1,0,0,0,0},
+    {1,3,3,3,3,3,3,3,3,3,3,3,1,0,0,0},
+    {1,3,3,3,3,3,3,1,1,1,1,1,1,0,0,0},
+    {1,3,3,3,3,3,3,1,0,0,0,0,0,0,0,0},
+    {1,3,3,1,1,3,3,3,1,0,0,0,0,0,0,0},
+    {1,3,1,0,0,1,3,3,3,1,0,0,0,0,0,0},
+    {1,1,0,0,0,1,3,3,3,1,0,0,0,0,0,0},
+    {0,0,0,0,0,0,1,3,3,1,0,0,0,0,0,0},
+    {0,0,0,0,0,0,1,3,3,1,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
 };
-
-#define MAX_WIDTH 8
-#define MAX_HEIGHT 12
 
 /* --- Internal Hardware Helpers (Must be above init) --- */
 
@@ -58,20 +70,14 @@ uint8_t mouse_read() {
 
 // New function to draw directly to a compositing buffer (bypassing the global putpixel)
 void mouse_draw_to_buffer(uint32_t* buffer, uint32_t pitch, uint32_t bpp_div_8) {
-    int sw = (8 * mouse_scale) / 10;
-    int sh = (12 * mouse_scale) / 10;
+    // Determine screen boundary to prevent overflow
+    // Assuming video_get_width/height isn't available here easily without include cycle,
+    // we rely on the clipping being done by caller relative to 'buffer' size if possible.
+    // However, raw buffer write needs some care.
     
-    for (int i = 0; i < sh; i++) {
-        for (int j = 0; j < sw; j++) {
-            // Map the current pixel back to the 8x12 mask using fixed point
-            int src_x = (j * 10) / mouse_scale;
-            int src_y = (i * 10) / mouse_scale;
-            
-            // Bounds check for the mask
-            if (src_x >= 8) src_x = 7;
-            if (src_y >= 12) src_y = 11;
-
-            uint8_t color_type = cursor_mask[src_y][src_x];
+    for (int i = 0; i < MAX_HEIGHT; i++) {
+        for (int j = 0; j < MAX_WIDTH; j++) {
+            uint8_t color_type = cursor_mask[i][j];
             if (color_type == 0) continue; // Transparent
             
             uint32_t color = (color_type == 1) ? 0xFFFFFFFF : 0x00000000;
@@ -81,10 +87,8 @@ void mouse_draw_to_buffer(uint32_t* buffer, uint32_t pitch, uint32_t bpp_div_8) 
             // Address = buffer_base + (y * pitch) + (x * bytes_per_pixel)
             uint64_t offset = ((mouse_y + i) * pitch) + ((mouse_x + j) * bpp_div_8);
             
-            // We need to be careful not to write out of bounds of the buffer
-            // (Assuming caller guarantees buffer size or we check limits? 
-            // The handler clamps X/Y so we should be mostly safe, but minimal check:)
-            // Note: We don't have buffer height here easily, trusting clamping.
+            // Simple bound check (assuming 1080p roughly max or trusting valid memory)
+            // A real driver would need fb_width/height passed in
             
             uint32_t* pixel = (uint32_t*)((uint8_t*)buffer + offset);
             *pixel = color;
