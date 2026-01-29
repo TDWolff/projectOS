@@ -4,6 +4,7 @@
 
 void video_init(void* mb_info);
 void putpixel(int x, int y, uint32_t color);
+void putpixel_alpha(int x, int y, uint32_t color); // Added
 uint32_t getpixel(int x, int y);
 void draw_rect(int x, int y, int w, int h, uint32_t color);
 void terminal_initialize();

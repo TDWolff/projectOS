@@ -21,7 +21,7 @@ static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
 
 static bool shell_visible = false;
-static bool last_mouse_button = false;
+// static bool last_mouse_button = false;
 
 // Forward Declaration
 void shell_set_visible(bool visible);
@@ -80,9 +80,11 @@ void shell_set_visible(bool visible) {
 }
 
 void shell_check_click() {
-    bool clicked = mouse_get_buttons() & 0x01; // Left click
-
-    last_mouse_button = clicked;
+    // Only check clicks if shell is visible or if we want global click handling
+    // Since taskbar is removed, we don't check for taskbar clicks anymore.
+    // bool clicked = mouse_get_buttons() & 0x01; // Left click
+    
+    // last_mouse_button = clicked;
 }
 
 void execute_command(char* input) {

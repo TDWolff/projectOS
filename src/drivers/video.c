@@ -7,6 +7,7 @@
 #include "../mem/vmm.h"
 #include "shell.h"
 #include "compositor.h"
+#include "bmp.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -26,14 +27,59 @@ static uint32_t* get_draw_buffer() {
 
 static font_t loaded_font = {0};
 
+// Helper to pack r,g,b into uint32
+uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
+    return (r << 16) | (g << 8) | b;
+}
+
 void putpixel(int x, int y, uint32_t color) {
-    uint32_t* buffer = get_draw_buffer();
-    if (!buffer || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
+    if (x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
     
-    // Note: if backbuffer is tightly packed (width*4) vs pitch-aligned, check implementation.
-    // Assuming backbuffer uses same structure as screen (including pitch padding).
-    uint32_t* pixel = (uint32_t*)((uint8_t*)buffer + (y * fb_pitch) + (x * 4));
-    *pixel = color;
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer) return;
+
+    // fb_pitch is in bytes. index = y * (pitch / 4) + x
+    buffer[y * (fb_pitch / 4) + x] = color;
+}
+
+// Draw a pixel with Alpha Blending
+// Color format: 0xAARRGGBB
+void putpixel_alpha(int x, int y, uint32_t color) {
+    if (x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
+
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer) return;
+
+    uint8_t alpha = (color >> 24) & 0xFF;
+
+    // Optimization: If fully opaque, just draw
+    if (alpha == 255) {
+        buffer[y * (fb_pitch / 4) + x] = color;
+        return;
+    }
+    // Optimization: If fully transparent, do nothing
+    if (alpha == 0) {
+        return;
+    }
+
+    // Alpha Blending Math:
+    // Result = (Source * Alpha + Dest * (255 - Alpha)) / 255
+    uint32_t bg_color = buffer[y * (fb_pitch / 4) + x];
+    
+    uint8_t bg_r = (bg_color >> 16) & 0xFF;
+    uint8_t bg_g = (bg_color >> 8) & 0xFF;
+    uint8_t bg_b = (bg_color) & 0xFF;
+
+    uint8_t fg_r = (color >> 16) & 0xFF;
+    uint8_t fg_g = (color >> 8) & 0xFF;
+    uint8_t fg_b = (color) & 0xFF;
+
+    // Use integer math (approximate / 255 with >> 8 for speed if desired, but here is accurate)
+    uint8_t out_r = (uint8_t)((fg_r * alpha + bg_r * (255 - alpha)) / 255);
+    uint8_t out_g = (uint8_t)((fg_g * alpha + bg_g * (255 - alpha)) / 255);
+    uint8_t out_b = (uint8_t)((fg_b * alpha + bg_b * (255 - alpha)) / 255);
+
+    buffer[y * (fb_pitch / 4) + x] = (out_r << 16) | (out_g << 8) | out_b;
 }
 
 // New: Draw a filled rectangle
@@ -47,24 +93,38 @@ void draw_rect(int x, int y, int w, int h, uint32_t color) {
 
 // New: Move all pixels up by one font height
 void terminal_scroll() {
-    uint32_t* buffer = get_draw_buffer();
-    if (!buffer || !loaded_font.height) return;
+    if (!fb_addr || !loaded_font.glyph_buffer) return;
 
-    uint64_t font_height = loaded_font.height;
-    uint8_t* dst = (uint8_t*)buffer;
-    uint8_t* src = (uint8_t*)buffer + (font_height * fb_pitch);
-    uint64_t size_to_copy = (fb_height - font_height) * fb_pitch;
+    // Boundary logic for Windowed Shell
+    uint32_t area_x = 0;
+    uint32_t area_y = 0;
+    uint32_t area_w = fb_width;
+    uint32_t area_h = fb_height;
 
-    // Move the screen up
-    memcpy(dst, src, size_to_copy);
-
-    // Clear the bottom line
-    uint32_t* bottom_line = (uint32_t*)((uint8_t*)buffer + (fb_height - font_height) * fb_pitch);
-    for (uint32_t i = 0; i < (font_height * fb_pitch) / 4; i++) {
-        bottom_line[i] = bg_color;
+    // Use SHELL constants if they exist (we'll assume they do or use defaults)
+    // Note: In a real system we'd pass a 'window' context, 
+    // but for now we'll just hardcode the check.
+    if (cursor_x >= 200 && cursor_x <= 800 && cursor_y >= 150 && cursor_y <= 550) {
+        area_x = 205; // 5px padding
+        area_y = 180; // Below title bar
+        area_w = 590;
+        area_h = 365;
     }
 
-    cursor_y -= font_height;
+    // Simple scroll up by one line
+    for (uint32_t y = area_y + loaded_font.height; y < area_y + area_h; y++) {
+        for (uint32_t x = area_x; x < area_x + area_w; x++) {
+            uint32_t color = getpixel(x, y);
+            putpixel(x, y - loaded_font.height, color);
+        }
+    }
+
+    // Clear the last line
+    draw_rect(area_x, area_y + area_h - loaded_font.height, area_w, loaded_font.height, bg_color);
+
+    // Adjust cursor position
+    cursor_y -= loaded_font.height;
+    if (cursor_y < area_y) cursor_y = area_y;
 }
 
 void video_init(void* mb_info) {
@@ -88,11 +148,16 @@ void video_init(void* mb_info) {
         // Initialize heap first if not already done in kernel.c, but here we assume it's ready
         // video_init is called after heap_init in kernel.c
         compositor_init(fb_width, fb_height, fb_pitch);
+        
+        // Load Background Wallpaper
+        // Mode 1: Scale to Fit (Fills screen, crops edges)
+        bmp_draw("background.bmp", 0, 0, 0);
     }
 
     if (!fb_addr) return;
 
-    terminal_clear();
+    // Remove the implicit clear or handle it differently if we have a wallpaper
+    // terminal_clear();
 
     // Font detection
     file_t* all_files = initrd_get_files();
@@ -181,7 +246,13 @@ void kprint(const char* str) {
 
 void terminal_clear() {
     if (!fb_addr) return;
-    draw_rect(0, 0, fb_width, fb_height, bg_color);
+    
+    // Check if we are using wallpaper or a solid color
+    // For now, let's just clear to the desktop color, OR we should repaint wallpaper
+    // But since we are likely in a windowed mode, terminal_clear might not be the right metaphor
+    // used globally.
+    // draw_rect(0, 0, fb_width, fb_height, bg_color);
+    
     // Position cursor at shell window start
     cursor_x = 205; 
     cursor_y = 185;
@@ -247,15 +318,32 @@ void video_draw_text(int x, int y, const char* str, uint32_t color) {
 void video_draw_desktop() {
     if (!fb_addr) return;
     
-    // Classic Windows 95 Teal: #008080
-    uint32_t desktop_color = 0x008080; 
-    uint32_t taskbar_color = 0xC0C0C0; 
+    // uint32_t taskbar_color = 0xC1C1C1;
 
-    // 1. Fill the screen with the wallpaper color
-    draw_rect(0, 0, fb_width, fb_height, desktop_color);
+    // 1. Fill the screen with the wallpaper color (FALLBACK)
+    // If we have a BMP, we might want to skip this or draw it underneath
+    // For now, let's just clear to Teal before drawing BMP on top.
+    
+    // IMPORTANT: We should NOT draw solid teal if we just drew a wallpaper!
+    // But video_draw_desktop isn't currently called in the loop in kernel.c?
+    // Let's check kernel.c
+    // Actually, video_draw_desktop IS NOT called in kernel.c.
+    
+    // However, the issue described "it's back to the default original with the hand drawn taskbar"
+    // implies something IS drawing over the wallpaper.
+    
+    // Ah, wait. 'video_draw_desktop' logic is likely invoked somewhere or "terminal_clear"
+    // The previous analysis showed "terminal_clear" is called at end of video_init.
+    
+    // In video_init:
+    // ... compositor_init ...
+    // ... bmp_draw ...
+    // terminal_clear(); <-- THIS WIPES THE WALLPAPER!
+    
+    // draw_rect(0, 0, fb_width, fb_height, desktop_color);
 
     // 2. Draw a Taskbar at the bottom (40 pixels high)
-    draw_rect(0, fb_height - 40, fb_width, 40, taskbar_color);
+    // draw_rect(0, fb_height - 40, fb_width, 40, taskbar_color);
 
     // Reset cursor for shell text (in the middle of the screen window)
     cursor_x = 205;

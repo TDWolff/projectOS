@@ -9,6 +9,7 @@
 #include "fs/initrd.h"
 #include "cpu/task.h"
 #include "drivers/mouse.h"
+#include "drivers/bmp.h"
 
 void kernel_main(void* mb_info) {
     terminal_initialize();
