@@ -3,7 +3,8 @@
 #include "graphics.h"
 
 #define TASKBAR_HEIGHT 45
-#define TASKBAR_COLOR 0xC0C0C0 // Grey
+// Now we can use strings! ("silver", "#C0C0C0", "white", etc.)
+#define TASKBAR_COLOR "white"
 #define TASKBAR_ALPHA 130      // 255 * decimal = opacity percentage
 #define TASKBAR_BOTTOM_MARGIN 10 
 #define TASKBAR_RADIUS 10
@@ -30,7 +31,7 @@ void taskbar_init() {
         taskbar_width, 
         TASKBAR_HEIGHT, 
         TASKBAR_RADIUS,
-        0xFFFFFF, // White color body
+        color_parse(TASKBAR_COLOR), // Automatically parse the defined string here
         TASKBAR_ALPHA, 
         false, // No border
         0,

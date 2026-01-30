@@ -18,6 +18,9 @@ void graphics_fill_circle(int x0, int y0, int radius, uint32_t color, bool borde
 // Rounded Rectangle primitives
 void graphics_fill_round_rect_alpha(int x, int y, int w, int h, int radius, uint32_t color, uint8_t alpha, bool border, uint32_t border_color, bool glass);
 
+#include "../lib/colors.h" // Expose colors to anyone including graphics.h
+#include "../lib/utils.h"  // Expose utils to anyone including graphics.h
+
 // --- Extended Graphics Library ---
 
 typedef struct {

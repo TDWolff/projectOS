@@ -2,11 +2,8 @@
 #include "vga.h"
 #include "../mem/heap.h"
 #include "../lib/string.h"
-
-// Helper for absolute value
-static int abs(int n) {
-    return (n < 0) ? -n : n;
-}
+#include "../lib/colors.h" // Added Colors Library
+#include "../lib/utils.h"  // Added Utils Library
 
 // Bresenham's Line Algorithm
 void graphics_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
@@ -151,14 +148,6 @@ static void graphics_blur_area(int x, int y, int w, int h, int mask_radius) {
     kfree(buffer);
     kfree(temp_buffer);
 }
-
-// NOTE: apply_blur per pixel is too localized. Glass effect requires area context.
-// We are deprecating the per-pixel apply_blur for large fills in favor of pre-pass area blur.
-static void apply_blur(int x, int y) {
-     // Intentionally left empty or simple for line primitives
-     // For huge rects, we will blur the whole area first.
-}
-
 
 // Draw a filled rectangle (solid color)
 void graphics_fill_rect(int x, int y, int w, int h, uint32_t color, bool border, uint32_t border_color, bool glass) {
@@ -314,16 +303,7 @@ void graphics_fill_round_rect_alpha(int x, int y, int w, int h, int radius, uint
     
     // 1. Top Section (y to y + radius - 1)
     for (int i = 0; i < radius; i++) {
-        int dy = radius - 1 - i; // Distance from the 'center' line of the top corners. 
-                                 // Actually let's trust the circle func: center is at row (y + radius).
-                                 // So for row (y+i), distance is (radius - i).
-                                 // We want to verify coordinate 0 relative to circle center.
-        
-        // Let's use dy from center.
-        // Row y + i. Center y is y + radius.
-        // dy = (y + radius) - (y + i) = radius - i.
-        // Since we want the pixel *at* radius to be zero width?
-        // Let's settle on: dy ranges from radius down to 1.
+        // int dy = radius - 1 - i; // REMOVED unused variable
         
         int center_dist = radius - i; 
         int dx = 0;
@@ -500,87 +480,98 @@ void graphics_draw_triangle(int x1, int y1, int x2, int y2, int x3, int y3, uint
 }
 
 // Fill a triangle (Standard Scanline Algorithm)
-void graphics_fill_triangle(int x1, int y1, int x2, int y2, int x3, int y3, uint32_t color) {
-    // Sort vertices by Y (y1 <= y2 <= y3)
+void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t color) {
+    // Sort vertices by Y (y0 <= y1 <= y2)
+    if (y0 > y1) { swap(&x0, &x1); swap(&y0, &y1); }
+    if (y0 > y2) { swap(&x0, &x2); swap(&y0, &y2); }
     if (y1 > y2) { swap(&x1, &x2); swap(&y1, &y2); }
-    if (y1 > y3) { swap(&x1, &x3); swap(&y1, &y3); }
-    if (y2 > y3) { swap(&x2, &x3); swap(&y2, &y3); }
 
-    int total_height = y3 - y1;
+    int total_height = y2 - y0;
     for (int i = 0; i < total_height; i++) {
-        bool second_half = i > y2 - y1 || y2 == y1;
-        int segment_height = second_half ? y3 - y2 : y2 - y1;
-        float alpha = (float)i / total_height;
-        float beta  = (float)(i - (second_half ? y2 - y1 : 0)) / segment_height;
+        bool second_half = i > y1 - y0 || y1 == y0;
+        int segment_height = second_half ? y2 - y1 : y1 - y0;
         
-        int A_x = x1 + (x3 - x1) * alpha;
-        int B_x = second_half ? x2 + (x3 - x2) * beta : x1 + (x2 - x1) * beta;
-        
-        if (A_x > B_x) swap(&A_x, &B_x);
-        
-        for (int j = A_x; j <= B_x; j++) {
-            graphics_putpixel(j, y1 + i, color);
-        }
-    }
-}
+        // Be careful not to divide by zero
+        if (segment_height == 0) segment_height = 1;
 
-// Linear interpolation between two colors
-static uint32_t lerp_color(uint32_t c1, uint32_t c2, float t) {
-    uint8_t r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
-    uint8_t r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
-    
-    uint8_t r = r1 + (r2 - r1) * t;
-    uint8_t g = g1 + (g2 - g1) * t;
-    uint8_t b = b1 + (b2 - b1) * t;
-    
-    return (r << 16) | (g << 8) | b;
-}
-
-// Fill Rectangle with Gradient
-void graphics_fill_gradient_rect(int x, int y, int w, int h, uint32_t c1, uint32_t c2, bool vertical) {
-    for (int i = 0; i < h; i++) {
-        uint32_t row_color = c1;
-        if (vertical) {
-            row_color = lerp_color(c1, c2, (float)i / h);
-        }
+        // Use integer math for interpolation ratios
+        // alpha = i / total_height
+        // beta  = (i - (second_half ? y1 - y0 : 0)) / segment_height
         
-        for (int j = 0; j < w; j++) {
-            uint32_t col_color = row_color;
-            if (!vertical) {
-                col_color = lerp_color(c1, c2, (float)j / w);
-            }
-            graphics_putpixel(x + j, y + i, col_color);
+        // We use lerp with precision of 1000 for ratios
+        int alpha_num = i;
+        int alpha_den = total_height;
+
+        int beta_num = i - (second_half ? y1 - y0 : 0);
+        int beta_den = segment_height;
+
+        int A = x0 + ((x2 - x0) * (long long)alpha_num) / alpha_den;
+        int B = second_half ? 
+                x1 + ((x2 - x1) * (long long)beta_num) / beta_den : 
+                x0 + ((x1 - x0) * (long long)beta_num) / beta_den; 
+
+        if (A > B) { int temp = A; A = B; B = temp; }
+
+        for (int j = A; j <= B; j++) {
+            putpixel(j, y0 + i, color);
         }
     }
 }
 
 // Quadratic Bezier Curve (3 control points)
 void graphics_draw_bezier_quad(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t color) {
-    for (float t = 0.0; t <= 1.0; t += 0.005) { // Step size determines smoothness
-        float u = 1.0 - t;
-        float tt = t * t;
-        float uu = u * u;
+    int prev_x = x0;
+    int prev_y = y0;
+    int steps = 20;
+
+    for (int i = 1; i <= steps; i++) {
+        // Use Integer lerp
+        int xa = lerp(x0, x1, i, steps);
+        int ya = lerp(y0, y1, i, steps);
+        int xb = lerp(x1, x2, i, steps);
+        int yb = lerp(y1, y2, i, steps);
         
-        int px = (uu * x0) + (2 * u * t * x1) + (tt * x2);
-        int py = (uu * y0) + (2 * u * t * y1) + (tt * y2);
-        
-        graphics_putpixel(px, py, color);
+        int x = lerp(xa, xb, i, steps);
+        int y = lerp(ya, yb, i, steps);
+
+        graphics_draw_line(prev_x, prev_y, x, y, color);
+        prev_x = x;
+        prev_y = y;
     }
 }
 
 // Cubic Bezier Curve (4 control points)
 void graphics_draw_bezier_cubic(int x0, int y0, int x1, int y1, int x2, int y2, int x3, int y3, uint32_t color) {
-    for (float t = 0.0; t <= 1.0; t += 0.005) {
-        float u = 1.0 - t;
-        float tt = t * t;
-        float uu = u * u;
-        float uuu = uu * u;
-        float ttt = tt * t;
+    int prev_x = x0;
+    int prev_y = y0;
+    int steps = 20;
 
-        int px = (uuu * x0) + (3 * uu * t * x1) + (3 * u * tt * x2) + (ttt * x3);
-        int py = (uuu * y0) + (3 * uu * t * y1) + (3 * u * tt * y2) + (ttt * y3);
+    for (int i = 1; i <= steps; i++) {
+        // int xa = lerp(x0, x1, t);
+        // int xb = lerp(x1, x2, t);
+        // int xc = lerp(x2, x3, t);
+        // int xm = lerp(xa, xb, t);
+        // int xn = lerp(xb, xc, t);
+        // int x = lerp(xm, xn, t);
+        
+        int xa = lerp(x0, x1, i, steps);
+        int ya = lerp(y0, y1, i, steps);
+        int xb = lerp(x1, x2, i, steps);
+        int yb = lerp(y1, y2, i, steps);
+        int xc = lerp(x2, x3, i, steps);
+        int yc = lerp(y2, y3, i, steps);
+        
+        int xm = lerp(xa, xb, i, steps);
+        int ym = lerp(ya, yb, i, steps);
+        int xn = lerp(xb, xc, i, steps);
+        int yn = lerp(yb, yc, i, steps);
+        
+        int x = lerp(xm, xn, i, steps);
+        int y = lerp(ym, yn, i, steps);
 
-        graphics_putpixel(px, py, color);
+        graphics_draw_line(prev_x, prev_y, x, y, color);
+        prev_x = x;
+        prev_y = y;
     }
 }
 
@@ -644,4 +635,40 @@ void graphics_fill_polygon(point_t* points, int count, uint32_t color) {
              }
          }
      }
+}
+
+// Fill Rectangle with Gradient
+void graphics_fill_gradient_rect(int x, int y, int w, int h, uint32_t c1, uint32_t c2, bool vertical) {
+    // Extract colors once
+    int r1 = (c1 >> 16) & 0xFF;
+    int g1 = (c1 >> 8) & 0xFF;
+    int b1 = c1 & 0xFF;
+
+    int r2 = (c2 >> 16) & 0xFF;
+    int g2 = (c2 >> 8) & 0xFF;
+    int b2 = c2 & 0xFF;
+
+    if (vertical) {
+        for (int i = 0; i < h; i++) {
+            // Lerp each component
+            // current step is i, total steps is h
+            uint8_t r = (uint8_t)lerp(r1, r2, i, h);
+            uint8_t g = (uint8_t)lerp(g1, g2, i, h);
+            uint8_t b = (uint8_t)lerp(b1, b2, i, h);
+            
+            uint32_t color = (r << 16) | (g << 8) | b;
+            graphics_draw_line(x, y + i, x + w - 1, y + i, color);
+        }
+    } else {
+        for (int i = 0; i < w; i++) {
+            // Lerp each component
+            // current step is i, total steps is w
+            uint8_t r = (uint8_t)lerp(r1, r2, i, w);
+            uint8_t g = (uint8_t)lerp(g1, g2, i, w);
+            uint8_t b = (uint8_t)lerp(b1, b2, i, w);
+
+            uint32_t color = (r << 16) | (g << 8) | b;
+            graphics_draw_line(x + i, y, x + i, y + h - 1, color);
+        }
+    }
 }
