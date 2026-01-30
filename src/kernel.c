@@ -10,6 +10,7 @@
 #include "cpu/task.h"
 #include "drivers/mouse.h"
 #include "drivers/bmp.h"
+#include "drivers/taskbar.h"
 
 void kernel_main(void* mb_info) {
     terminal_initialize();
@@ -27,6 +28,7 @@ void kernel_main(void* mb_info) {
     // create_task(task_a);
     // create_task(task_b);
     shell_init();
+    taskbar_init(); // Initialize and draw the taskbar
     mouse_init(); // Moved below shell_init
 
     while(1) { 

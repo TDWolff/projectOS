@@ -32,6 +32,15 @@ uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
     return (r << 16) | (g << 8) | b;
 }
 
+// Fixed: getpixel should read from the same buffer we are drawing to (Double Buffering)
+// This ensures we can read back what we just drew (e.g. for blur effects)
+uint32_t getpixel(int x, int y) {
+    uint32_t* buffer = get_draw_buffer();
+    if (!buffer || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
+    // fb_pitch is in bytes. index = y * (pitch / 4) + x
+    return buffer[y * (fb_pitch / 4) + x];
+}
+
 void putpixel(int x, int y, uint32_t color) {
     if (x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return;
     
@@ -275,11 +284,6 @@ void video_set_color(uint32_t fg, uint32_t bg) {
 uint32_t get_fb_width() { return fb_width; }
 uint32_t get_fb_height() { return fb_height; }
 
-uint32_t getpixel(int x, int y) {
-    if (!fb_addr || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
-    return *(uint32_t*)((uint8_t*)fb_addr + (y * fb_pitch) + (x * 4));
-}
-
 void terminal_initialize() {}
 void terminal_set_color(uint8_t fg, uint8_t bg) { 
     // Simplified conversion for now
@@ -366,13 +370,12 @@ void video_blit_8x8(int x, int y, uint32_t* data) {
     }
 }
 
-uint32_t video_get_pixel(int x, int y) {
-    uint32_t* buffer = get_draw_buffer();
-    if (!buffer || x < 0 || x >= (int)fb_width || y < 0 || y >= (int)fb_height) return 0;
-    return *(uint32_t*)((uint8_t*)buffer + (y * fb_pitch) + (x * 4));
-}
-
 // Function to flush frame
 void video_swap() {
     compositor_swap_buffers();
+}
+
+// Deprecated or Alias
+uint32_t video_get_pixel(int x, int y) {
+    return getpixel(x, y);
 }
