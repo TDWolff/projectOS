@@ -7,7 +7,6 @@ LD = x86_64-elf-ld
 # 1. Flags
 ASMFLAGS = -f elf64
 CFLAGS = -target x86_64-pc-none-elf -ffreestanding -mno-red-zone -m64 \
-         -mno-sse -mno-sse2 -mno-avx -mno-80387 -msoft-float \
          -Isrc/include \
          -O2 -Wall -Wextra
 

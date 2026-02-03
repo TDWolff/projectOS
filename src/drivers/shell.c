@@ -9,6 +9,7 @@
 #include "../mem/pmm.h"
 #include "../mem/vmm.h"
 #include "mouse.h"
+#include "../lib/settings.h"
 
 // Shell Window Coordinates
 #define SHELL_X 200
@@ -30,8 +31,12 @@ void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
     buffer_idx = 0;
     
-    // Set terminal background to teal so text doesn't have black boxes
-    terminal_set_bg(0x008080);
+    // Load background color from settings
+    uint32_t bg = settings_get_int("bg_color");
+    if (bg == 0) bg = 0x008080; // Default Teal
+    
+    // Set terminal background
+    terminal_set_bg(bg);
     
     // Make shell visible by default since we removed the button
     shell_set_visible(true);
