@@ -5,6 +5,11 @@
 #include "../lib/string.h"
 #include "../mem/pmm.h"
 #include "mouse.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "../lib/settings.h"
+#include "vga.h" // Added video
+#include "window.h" // Added window manager
 
 // Tri-Buffer Architecture:
 // 1. canvas_buffer: The clean desktop where apps draw (Returned by get_backbuffer)
@@ -49,30 +54,51 @@ void* compositor_get_backbuffer() {
     return canvas_buffer;
 }
 
+// Internal function to redraw the entire scene stack
+// 1. Desktop Background (Wallpaper/Color)
+// 2. Windows (Back to Front)
+// 3. Mouse Cursor
+static void compositor_render_scene() {
+    // 1. Clear Backbuffer with Desktop (copy from Canvas)
+    // Optimization: If no windows moved, we don't strictly need to do this, 
+    // but for now we redraw every frame for correctness during movement.
+    uint64_t buffer_size = (uint64_t)screen_height * screen_pitch;
+    
+    // Copy the static background (Shell/Wallpaper) into the composition buffer
+    memcpy(backbuffer, canvas_buffer, buffer_size);
+
+    // 2. Draw Windows
+    // We need to tell the window manager to draw onto the *backbuffer*, 
+    // but currently all drawing functions target the "active" buffer.
+    // We temporarily swap the target, or ensure window_draw uses putpixel logic 
+    // that targets the backbuffer. 
+    
+    // Ideally, we'd pass the buffer to window_draw. For now, since `putpixel` 
+    // checks `get_draw_buffer()`, we need to ensure THAT returns 'backbuffer'.
+    
+    // TODO: This part is tricky with global state. 
+    // For now, let's assume `window_paint_all` calls graphical functions 
+    // that eventually write to whatever `compositor_get_draw_target()` returns.
+    
+    // HACK: Start drawing windows
+    window_paint_all();
+    
+    // 3. Draw Mouse
+    mouse_draw_to_buffer(backbuffer, screen_pitch, 4);
+}
+
 // Copy Back Buffer -> Front Buffer (Video Memory)
 void compositor_swap_buffers() {
     void* frontbuffer = get_framebuffer_addr();
     if (!backbuffer || !frontbuffer || !canvas_buffer) return;
 
     // 1. Composition Step:
-    // Copy Clean Canvas -> Backbuffer (Overwrites previous mouse/garbage)
-    memcpy(backbuffer, canvas_buffer, screen_height * screen_pitch);
-
-    // 2. Draw Mouse on Backbuffer
-    // We draw "on top" of the fresh copy of the desktop
-    mouse_draw_to_buffer(backbuffer, screen_pitch, 4); // 4 bytes per pixel (32bpp)
-
-    // Critical Section: Disable interrupts to prevent interference during V-Sync/Swap
-    __asm__ volatile("cli");
-
-    // NEW: Wait for Vertical Retrace to avoid tearing (V-Sync)
-    while ((inb(0x3DA) & 0x08)); 
-    while (!(inb(0x3DA) & 0x08));
-
-    // 3. Presentation Step:
-    // Fast copy Backbuffer -> Frontbuffer (Video Memory)
+    // Render the full stack (BG -> Windows -> Mouse) to Backbuffer
+    video_set_subsystem_target(backbuffer); // Tell graphics engine to draw here
+    compositor_render_scene(); 
+    video_set_subsystem_target(canvas_buffer); // Reset to canvas for normal drawing (e.g. system updates)
+    
+    // 2. V-Sync / Presentation Step:
+    // Copy Backbuffer -> Frontbuffer (Hardware)
     memcpy(frontbuffer, backbuffer, screen_height * screen_pitch);
-
-    // Re-enable interrupts
-    __asm__ volatile("sti");
 }

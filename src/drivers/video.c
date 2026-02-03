@@ -18,8 +18,17 @@ static uint32_t cursor_y = 0;
 static uint32_t fg_color = 0xFFFFFFFF; 
 static uint32_t bg_color = 0x00808080; // Default to Teal background
 
+// Global override for drawing target
+static uint32_t* manual_draw_target = 0;
+
+void video_set_subsystem_target(uint32_t* target) {
+    manual_draw_target = target;
+}
+
 // Helper to get draw target (Backbuffer if enabled, else Frontbuffer)
 static uint32_t* get_draw_buffer() {
+    if (manual_draw_target) return manual_draw_target;
+
     uint32_t* bb = (uint32_t*)compositor_get_backbuffer();
     if (bb) return bb;
     return fb_addr;

@@ -11,8 +11,10 @@
 #include "drivers/mouse.h"
 #include "drivers/bmp.h"
 #include "drivers/systemui.h" 
+#include "drivers/window.h" // Added window manager
 #include "lib/float.h"
 #include "lib/settings.h" // Added settings
+#include "drivers/compositor.h"
 
 void kernel_main(void* mb_info) {
     terminal_initialize();
@@ -26,23 +28,26 @@ void kernel_main(void* mb_info) {
     idt_init(); 
     timer_init(100);
     keyboard_init();
+    mouse_init();
     
-    // Multi-tasking demo suspended for clean UI
-    // task_init();
-    // create_task(task_a);
-    // create_task(task_b);
+    // Initialize System UI (Top Bar, Dock)
+    systemui_init();
+
+    // Create a demo window on startup
+    window_create(300, 200, 500, 350, "Test Window");
+
     shell_init();
-    // taskbar_init(); // Initialize and draw the taskbar
-    systemui_init(); // Initialize the new System UI (Top bar + Dock)
-    mouse_init(); // Moved below shell_init
 
     uint64_t last_tick = 0;
 
     while(1) { 
         shell_check_click(); // Keep checking for mouse clicks on the taskbar
         
+        // Handle Window Input (Dragging)
+        window_handle_mouse(mouse_get_x(), mouse_get_y(), mouse_get_buttons());
+        
         // Refresh the screen from double buffer
-        video_swap();
+        compositor_swap_buffers();
         
         // Update System UI (Clock) every second (approx 100 ticks)
         if (get_ticks() - last_tick >= 100) {

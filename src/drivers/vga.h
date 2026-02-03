@@ -25,6 +25,9 @@ uint32_t get_fb_height();
 void video_blit_8x8(int x, int y, uint32_t* data);
 uint32_t video_get_pixel(int x, int y);
 
+// Direct Buffer Targeting (For Compositor)
+void video_set_subsystem_target(uint32_t* target);
+
 // Framebuffer Info for User Space
 typedef struct {
     uint64_t addr;

@@ -85,6 +85,15 @@ void mouse_draw_to_buffer(uint32_t* buffer, uint32_t pitch, uint32_t bpp_div_8) 
             // Calculate memory offset
             // Buffer is uint32_t*, but pitch is in bytes
             // Address = buffer_base + (y * pitch) + (x * bytes_per_pixel)
+            
+            // Check boundaries
+            int screen_w = (int)get_fb_width();
+            int screen_h = (int)get_fb_height();
+
+            if (mouse_x + j >= screen_w || mouse_y + i >= screen_h || mouse_x + j < 0 || mouse_y + i < 0) {
+                continue;
+            }
+
             uint64_t offset = ((mouse_y + i) * pitch) + ((mouse_x + j) * bpp_div_8);
             
             // Simple bound check (assuming 1080p roughly max or trusting valid memory)
@@ -160,12 +169,15 @@ void mouse_handler() {
             mouse_x += x_offset;
             mouse_y -= y_offset; // PS/2 Y is inverted
 
-            // Clamp to screen bounds (assuming 1024x768 - should query properly but hardcoded for now)
-            // TODO: Get actual screen dimensions
+            // Clamp to screen bounds
+            int w = (int)get_fb_width();
+            int h = (int)get_fb_height();
+            
+            // Mouse tip should stay within screen
             if (mouse_x < 0) mouse_x = 0;
             if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x > 1024 - 10) mouse_x = 1024 - 10;
-            if (mouse_y > 768 - 10) mouse_y = 768 - 10;
+            if (mouse_x >= w) mouse_x = w - 1;
+            if (mouse_y >= h) mouse_y = h - 1;
 
             // No draw_cursor() needed!
             

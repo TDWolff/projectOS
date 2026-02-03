@@ -11,6 +11,21 @@
 #include "mouse.h"
 #include "../lib/settings.h"
 
+// List of files to exclude from user view/access
+static const char* protected_files[] = {
+    "settings.pset",
+    "kernel.bin", // Usually protected anyway, but good to list
+    "limine.conf",
+    0 // Null terminator
+};
+
+static bool is_file_protected(const char* name) {
+    for (int i = 0; protected_files[i]; i++) {
+        if (strcmp(name, protected_files[i]) == 0) return true;
+    }
+    return false;
+}
+
 // Shell Window Coordinates
 #define SHELL_X 200
 #define SHELL_Y 150
@@ -101,6 +116,12 @@ void execute_command(char* input) {
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
         char* filename = input + 4;
+
+        if (is_file_protected(filename)) {
+            kprintf("\nError: Access Denied (Protected File)");
+            return;
+        }
+
         file_t* f = initrd_open(filename);
 
         if (f) {
@@ -153,7 +174,7 @@ void execute_command(char* input) {
         file_t* files = initrd_get_files();
         kprintf("\n--- Filesystem ---\n");
         for(int i=0; i<MAX_FILES; i++) {
-            if(files[i].exists) {
+            if(files[i].exists && !is_file_protected(files[i].name)) {
                 kprintf("%s  (%d bytes)\n", files[i].name, files[i].size);
             }
         }
@@ -161,6 +182,12 @@ void execute_command(char* input) {
     // 3. CAT (Read File) - Quick hack parsing
     else if (input[0] == 'c' && input[1] == 'a' && input[2] == 't' && input[3] == ' ') {
         char* filename = input + 4; // Skip "cat "
+
+        if (is_file_protected(filename)) {
+            kprintf("\nError: Access Denied (Protected File)");
+            return;
+        }
+
         file_t* f = initrd_open(filename);
         
         if (f) {

@@ -1,10 +1,11 @@
 bg_color=0xFF008080
-dock_color=0xFFFFFF
-dock_alpha=140
-topbar_alpha=255
-topbar_color=0xFF000000
+dock_color=0xFFD0D0D0
+dock_alpha=120
+topbar_alpha=120
+topbar_color=0xFFD0D0D0
 username=ProjectOS User
 system=ProjectOS 0.0.1
 show_clock=1
 show_seconds=1
 timezone=-8
+clock_pos=right
