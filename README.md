@@ -104,8 +104,7 @@ qemu-system-x86_64 \
 
 Where `os.iso` is the ISO you generate (your ISO filename depends on how you package the final image; if you add an ISO creation step that outputs a specific name, update this section accordingly).
 
-If you want, I can add a `make run` target that produces a named ISO artifact and launches QEMU in one command.
-
+Optionally you can just run ```make run```, which will execute the above command (assuming you have `qemu-system-x86_64` installed and in your PATH).
 ---
 
 ## Configuration (settings)

@@ -15,12 +15,51 @@
 // Traffic Light Constants
 #define BTN_RADIUS 6
 #define BTN_RED    0xFFFF5F56
-#define BTN_YELLOW 0xFFFFBD2E
 #define BTN_GREEN  0xFF27C93F
+
+// Window Flags
+#define WIN_FLAG_MAXIMIZED (1u << 0)
+
+// Desktop layout (should match System UI)
+#define TOPBAR_HEIGHT 28
+#define DOCK_HEIGHT 55
+#define DOCK_BOTTOM_MARGIN 15
 
 // Global Window List
 static window_t* window_list_head = 0;
 static window_t* window_list_tail = 0;
+
+// Track last mouse button state for edge-triggered clicks
+static bool was_mouse_pressed = false;
+
+static void window_remove(window_t* win) {
+    if (!win) return;
+
+    window_t* prev = 0;
+    window_t* current = window_list_head;
+
+    while (current) {
+        if (current == win) {
+            // Unlink
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                window_list_head = current->next;
+            }
+
+            if (window_list_tail == current) {
+                window_list_tail = prev;
+            }
+
+            // Free
+            kfree(current);
+            return;
+        }
+
+        prev = current;
+        current = current->next;
+    }
+}
 
 static void window_register(window_t* win) {
     if (!win) return;
@@ -63,7 +102,54 @@ window_t* window_create(int x, int y, int width, int height, const char* title) 
 static window_t* dragging_window = 0;
 static int drag_offset_x = 0;
 static int drag_offset_y = 0;
-static bool was_mouse_pressed = false;
+
+// Maximize/restore bookkeeping (single window for now).
+// Next step (once window_t supports it): store per-window.
+static window_t* maximized_window = 0;
+static int maximized_prev_x = 0;
+static int maximized_prev_y = 0;
+static int maximized_prev_w = 0;
+static int maximized_prev_h = 0;
+
+static void window_toggle_maximize(window_t* win) {
+    if (!win) return;
+
+    int screen_w = (int)get_fb_width();
+    int screen_h = (int)get_fb_height();
+
+    int usable_top = TOPBAR_HEIGHT;
+    int usable_bottom = screen_h - (DOCK_HEIGHT + DOCK_BOTTOM_MARGIN);
+
+    if (usable_bottom < usable_top + 1) {
+        usable_bottom = usable_top + 1;
+    }
+
+    if (win->flags & WIN_FLAG_MAXIMIZED) {
+        // Restore
+        win->flags &= ~WIN_FLAG_MAXIMIZED;
+        if (maximized_window == win) {
+            win->x = maximized_prev_x;
+            win->y = maximized_prev_y;
+            win->width = maximized_prev_w;
+            win->height = maximized_prev_h;
+            maximized_window = 0;
+        }
+        return;
+    }
+
+    // Maximize
+    win->flags |= WIN_FLAG_MAXIMIZED;
+    maximized_window = win;
+    maximized_prev_x = win->x;
+    maximized_prev_y = win->y;
+    maximized_prev_w = win->width;
+    maximized_prev_h = win->height;
+
+    win->x = 0;
+    win->y = usable_top;
+    win->width = screen_w;
+    win->height = usable_bottom - usable_top;
+}
 
 void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
     bool is_pressed = (buttons & 1); // Left click
@@ -91,6 +177,40 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
         }
 
         if (hit_win) {
+            // If the click is on the red close button, close the window.
+            // Button layout must match `window_draw()`.
+            int btn_start_x = hit_win->x + 18;
+            int btn_y = hit_win->y + 16;
+            int btn_spacing = 22;
+
+            int dx = mouse_x - btn_start_x;
+            int dy = mouse_y - btn_y;
+            if ((dx * dx + dy * dy) <= (BTN_RADIUS * BTN_RADIUS)) {
+                // If we were dragging this window somehow, stop.
+                if (dragging_window == hit_win) {
+                    dragging_window = 0;
+                }
+
+                window_remove(hit_win);
+                was_mouse_pressed = is_pressed;
+                return;
+            }
+
+            // Zoom (Green) - maximize/restore
+            int green_x = btn_start_x + btn_spacing;
+            dx = mouse_x - green_x;
+            dy = mouse_y - btn_y;
+            if ((dx * dx + dy * dy) <= (BTN_RADIUS * BTN_RADIUS)) {
+                // If we were dragging this window somehow, stop.
+                if (dragging_window == hit_win) {
+                    dragging_window = 0;
+                }
+
+                window_toggle_maximize(hit_win);
+                was_mouse_pressed = is_pressed;
+                return;
+            }
+
             dragging_window = hit_win;
             drag_offset_x = mouse_x - hit_win->x;
             drag_offset_y = mouse_y - hit_win->y;
@@ -101,6 +221,12 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
 
     // 2. Mouse Dragging: Update Position
     if (is_pressed && dragging_window) {
+        // Don't allow dragging a maximized window.
+        if (dragging_window->flags & WIN_FLAG_MAXIMIZED) {
+            was_mouse_pressed = is_pressed;
+            return;
+        }
+
         dragging_window->x = mouse_x - drag_offset_x;
         dragging_window->y = mouse_y - drag_offset_y;
 
@@ -108,9 +234,9 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
         int screen_w = (int)get_fb_width();
         int screen_h = (int)get_fb_height();
 
-        // Clamp Top (Top Bar is 28px) - Keep existing logic
-        if (dragging_window->y < 28) {
-            dragging_window->y = 28;
+        // Clamp Top (Top Bar)
+        if (dragging_window->y < TOPBAR_HEIGHT) {
+            dragging_window->y = TOPBAR_HEIGHT;
         }
 
         // Clamp Left
@@ -123,9 +249,10 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
             dragging_window->x = screen_w - dragging_window->width;
         }
 
-        // Clamp Bottom
-        if (dragging_window->y + dragging_window->height > screen_h) {
-            dragging_window->y = screen_h - dragging_window->height;
+        // Clamp Bottom (stay above Dock area)
+        int usable_bottom = screen_h - (DOCK_HEIGHT + DOCK_BOTTOM_MARGIN);
+        if (dragging_window->y + dragging_window->height > usable_bottom) {
+            dragging_window->y = usable_bottom - dragging_window->height;
         }
     }
 
@@ -211,11 +338,20 @@ void window_draw(window_t* win) {
     // Close (Red)
     graphics_fill_circle(btn_start_x, btn_y, BTN_RADIUS, BTN_RED, false, 0, false);
     
-    // Minimize (Yellow)
-    graphics_fill_circle(btn_start_x + btn_spacing, btn_y, BTN_RADIUS, BTN_YELLOW, false, 0, false);
-    
+        // Draw X inside the red button
+        // Keep it small so it stays within the circle.
+        int x_size = 3;
+        graphics_draw_line(btn_start_x - x_size, btn_y - x_size, btn_start_x + x_size, btn_y + x_size, 0xFF000000);
+        graphics_draw_line(btn_start_x - x_size, btn_y + x_size, btn_start_x + x_size, btn_y - x_size, 0xFF000000);
+
     // Zoom (Green)
-    graphics_fill_circle(btn_start_x + (btn_spacing * 2), btn_y, BTN_RADIUS, BTN_GREEN, false, 0, false);
+    graphics_fill_circle(btn_start_x + btn_spacing, btn_y, BTN_RADIUS, BTN_GREEN, false, 0, false);
+    
+        // Draw + inside the green button
+        int green_x = btn_start_x + btn_spacing;
+        int plus_size = 3;
+        graphics_draw_line(green_x - plus_size, btn_y, green_x + plus_size, btn_y, 0xFF000000);
+        graphics_draw_line(green_x, btn_y - plus_size, green_x, btn_y + plus_size, 0xFF000000);
 
     // 6. (Optional) Title
     // Simple text centering logic
