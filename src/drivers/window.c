@@ -32,6 +32,18 @@ static window_t* window_list_tail = 0;
 // Track last mouse button state for edge-triggered clicks
 static bool was_mouse_pressed = false;
 
+static void window_focus_internal(window_t* win);
+
+static bool point_in_rect(int px, int py, int x, int y, int w, int h) {
+    return (px >= x && px < x + w && py >= y && py < y + h);
+}
+
+static bool point_in_circle(int px, int py, int cx, int cy, int r) {
+    int dx = px - cx;
+    int dy = py - cy;
+    return (dx * dx + dy * dy) <= (r * r);
+}
+
 static void window_remove(window_t* win) {
     if (!win) return;
 
@@ -61,6 +73,12 @@ static void window_remove(window_t* win) {
     }
 }
 
+void window_close(window_t* win) {
+    // Keep a single close path so it also cancels dragging, etc.
+    if (!win) return;
+    window_remove(win);
+}
+
 static void window_register(window_t* win) {
     if (!win) return;
     
@@ -72,6 +90,40 @@ static void window_register(window_t* win) {
         window_list_tail->next = win;
         window_list_tail = win;
     }
+}
+
+static void window_focus_internal(window_t* win) {
+    if (!win) return;
+    if (window_list_tail == win) return; // already on top
+
+    // Unlink
+    window_t* prev = 0;
+    window_t* cur = window_list_head;
+    while (cur) {
+        if (cur == win) break;
+        prev = cur;
+        cur = cur->next;
+    }
+    if (!cur) return; // not in list
+
+    if (prev) prev->next = cur->next;
+    else window_list_head = cur->next;
+
+    if (window_list_tail == cur) window_list_tail = prev;
+
+    // Append to tail
+    cur->next = 0;
+    if (!window_list_head) {
+        window_list_head = cur;
+        window_list_tail = cur;
+    } else {
+        window_list_tail->next = cur;
+        window_list_tail = cur;
+    }
+}
+
+void window_focus(window_t* win) {
+    window_focus_internal(win);
 }
 
 window_t* window_create(int x, int y, int width, int height, const char* title) {
@@ -92,6 +144,12 @@ window_t* window_create(int x, int y, int width, int height, const char* title) 
 
     win->next = 0;
     win->flags = 0;
+    win->restore_x = x;
+    win->restore_y = y;
+    win->restore_w = width;
+    win->restore_h = height;
+    win->draw_content = 0;
+    win->draw_content_user = 0;
 
     // Auto-register window
     window_register(win);
@@ -99,17 +157,23 @@ window_t* window_create(int x, int y, int width, int height, const char* title) 
     return win;
 }
 
+void window_set_content_renderer(window_t* win, void (*draw_content)(window_t* win, void* user), void* user) {
+    if (!win) return;
+    win->draw_content = draw_content;
+    win->draw_content_user = user;
+}
+
+void window_get_content_rect(window_t* win, int* out_x, int* out_y, int* out_w, int* out_h) {
+    if (!win) return;
+    if (out_x) *out_x = win->x;
+    if (out_y) *out_y = win->y + WIN_TITLE_HEIGHT;
+    if (out_w) *out_w = win->width;
+    if (out_h) *out_h = win->height - WIN_TITLE_HEIGHT;
+}
+
 static window_t* dragging_window = 0;
 static int drag_offset_x = 0;
 static int drag_offset_y = 0;
-
-// Maximize/restore bookkeeping (single window for now).
-// Next step (once window_t supports it): store per-window.
-static window_t* maximized_window = 0;
-static int maximized_prev_x = 0;
-static int maximized_prev_y = 0;
-static int maximized_prev_w = 0;
-static int maximized_prev_h = 0;
 
 static void window_toggle_maximize(window_t* win) {
     if (!win) return;
@@ -127,23 +191,19 @@ static void window_toggle_maximize(window_t* win) {
     if (win->flags & WIN_FLAG_MAXIMIZED) {
         // Restore
         win->flags &= ~WIN_FLAG_MAXIMIZED;
-        if (maximized_window == win) {
-            win->x = maximized_prev_x;
-            win->y = maximized_prev_y;
-            win->width = maximized_prev_w;
-            win->height = maximized_prev_h;
-            maximized_window = 0;
-        }
+        win->x = win->restore_x;
+        win->y = win->restore_y;
+        win->width = win->restore_w;
+        win->height = win->restore_h;
         return;
     }
 
     // Maximize
     win->flags |= WIN_FLAG_MAXIMIZED;
-    maximized_window = win;
-    maximized_prev_x = win->x;
-    maximized_prev_y = win->y;
-    maximized_prev_w = win->width;
-    maximized_prev_h = win->height;
+    win->restore_x = win->x;
+    win->restore_y = win->y;
+    win->restore_w = win->width;
+    win->restore_h = win->height;
 
     win->x = 0;
     win->y = usable_top;
@@ -165,8 +225,7 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
         
         while (current) {
             // Check Hitbox (Whole Window for now, refined to Title Bar)
-            if (mouse_x >= current->x && mouse_x < current->x + current->width &&
-                mouse_y >= current->y && mouse_y < current->y + current->height) {
+            if (point_in_rect(mouse_x, mouse_y, current->x, current->y, current->width, current->height)) {
                 
                 // Specific Check: Title Bar Only (Top 28px)
                 if (mouse_y < current->y + WIN_TITLE_HEIGHT) {
@@ -185,13 +244,13 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
 
             int dx = mouse_x - btn_start_x;
             int dy = mouse_y - btn_y;
-            if ((dx * dx + dy * dy) <= (BTN_RADIUS * BTN_RADIUS)) {
+            if (point_in_circle(mouse_x, mouse_y, btn_start_x, btn_y, BTN_RADIUS)) {
                 // If we were dragging this window somehow, stop.
                 if (dragging_window == hit_win) {
                     dragging_window = 0;
                 }
 
-                window_remove(hit_win);
+                window_close(hit_win);
                 was_mouse_pressed = is_pressed;
                 return;
             }
@@ -200,7 +259,7 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
             int green_x = btn_start_x + btn_spacing;
             dx = mouse_x - green_x;
             dy = mouse_y - btn_y;
-            if ((dx * dx + dy * dy) <= (BTN_RADIUS * BTN_RADIUS)) {
+            if (point_in_circle(mouse_x, mouse_y, green_x, btn_y, BTN_RADIUS)) {
                 // If we were dragging this window somehow, stop.
                 if (dragging_window == hit_win) {
                     dragging_window = 0;
@@ -211,11 +270,12 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
                 return;
             }
 
+            // Focus the window before starting drag so it comes to front.
+            window_focus_internal(hit_win);
+
             dragging_window = hit_win;
             drag_offset_x = mouse_x - hit_win->x;
             drag_offset_y = mouse_y - hit_win->y;
-            
-            // TODO: Move hit_win to end of list (focus it)
         }
     }
 
@@ -368,4 +428,9 @@ void window_draw(window_t* win) {
 
     // Draw Window Title (Dark Grey Text)
     video_draw_text(title_x, title_y, win->title, 0xFF404040);
+
+    // 7. Draw window content (apps) on top of the window frame.
+    if (win->draw_content) {
+        win->draw_content(win, win->draw_content_user);
+    }
 }
