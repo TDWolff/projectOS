@@ -12,6 +12,7 @@
 #include "drivers/bmp.h"
 #include "drivers/systemui.h" 
 #include "drivers/window.h" // Added window manager
+#include "drivers/terminal_window.h"
 #include "lib/float.h"
 #include "lib/settings.h" // Added settings
 #include "drivers/compositor.h"
@@ -33,10 +34,12 @@ void kernel_main(void* mb_info) {
     // Initialize System UI (Top Bar, Dock)
     systemui_init();
 
-    // Create a demo window on startup
-    window_create(300, 200, 500, 350, "Test Window");
+    // Create Terminal window on startup (window manager owns chrome; terminal draws content)
+    terminal_window_t* terminal = terminal_window_create(240, 160, 640, 420, "Terminal");
+    keyboard_set_terminal_window(terminal);
 
     shell_init();
+    shell_set_output_sink(terminal_window_shell_putc, terminal);
 
     uint64_t last_tick = 0;
 

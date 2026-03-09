@@ -11,6 +11,24 @@
 #include "mouse.h"
 #include "../lib/settings.h"
 
+// Shell output sink: lets the windowed terminal display shell I/O.
+static void (*g_shell_putc)(char c, void* user) = 0;
+static void* g_shell_putc_user = 0;
+
+void shell_set_output_sink(void (*putc_cb)(char c, void* user), void* user) {
+    g_shell_putc = putc_cb;
+    g_shell_putc_user = user;
+}
+
+static void shell_out_char(char c) {
+    if (g_shell_putc) g_shell_putc(c, g_shell_putc_user);
+}
+
+static void shell_out_str(const char* s) {
+    if (!s) return;
+    for (int i = 0; s[i]; i++) shell_out_char(s[i]);
+}
+
 // List of files to exclude from user view/access
 static const char* protected_files[] = {
     "settings.pset",
@@ -26,21 +44,9 @@ static bool is_file_protected(const char* name) {
     return false;
 }
 
-// Shell Window Coordinates
-#define SHELL_X 200
-#define SHELL_Y 150
-#define SHELL_WIN_W 600
-#define SHELL_WIN_H 400
-
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
-
-static bool shell_visible = false;
-// static bool last_mouse_button = false;
-
-// Forward Declaration
-void shell_set_visible(bool visible);
 
 void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
@@ -53,79 +59,34 @@ void shell_init() {
     // Set terminal background
     terminal_set_bg(bg);
     
-    // Make shell visible by default since we removed the button
-    shell_set_visible(true);
-}
-
-void draw_shell_window() {
-    if (!shell_visible) return;
-
-    // int x = SHELL_X;
-    // int y = SHELL_Y;
-    // int w = SHELL_WIN_W;
-    // int h = SHELL_WIN_H;
-
-    // // Window shadow
-    // draw_rect(x + 4, y + 4, w, h, 0x404040);
-    // // Window Body
-    // draw_rect(x, y, w, h, 0xC0C0C0);
-    // // Title Bar
-    // draw_rect(x + 2, y + 2, w - 4, 25, 0x000080); // Classic Blue title
-    
-    // // Label for title bar
-    // video_draw_text(x + 10, y + 5, "Terminal", 0xFFFFFF);
-
-    // // Text Area
-    // draw_rect(x + 5, y + 30, w - 10, h - 35, 0x000000); // Black terminal area
-}
-
-void shell_set_visible(bool visible) {
-    shell_visible = visible;
-    if (visible) {
-        // Redraw desktop and window to ensure clean state
-        video_draw_desktop();
-        draw_shell_window(); 
-        
-        // When opening the shell, set the kernel's text cursor inside the black box
-        // video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
-        // video_set_color(0xFFFFFFFF, 0x000000); // White text, Black bg
-        
-        // Remove the leading newline so it starts at the top-left of the black box
-        //kprintf("root %% ");
-     } else {
-        // When closing, reset everything
-        video_draw_desktop();
-        //video_set_color(0xFFFFFFFF, 0x008080); // White text, Teal bg
-    }
+    // Shell no longer draws its own window. Rendering/hosting is handled by the
+    // window manager (or by compositor/system UI) exclusively.
 }
 
 void shell_check_click() {
-    // Only check clicks if shell is visible or if we want global click handling
-    // Since taskbar is removed, we don't check for taskbar clicks anymore.
-    // bool clicked = mouse_get_buttons() & 0x01; // Left click
-    
-    // last_mouse_button = clicked;
+    // No-op: shell no longer owns any window chrome or click handling.
 }
 
 void execute_command(char* input) {
-    if (!shell_visible) return;
     // 1. Help
     if (strcmp(input, "help") == 0) {
-        kprintf("\nls, cat, clear, ticks, divzero, echo, run <program>");
+    shell_out_str("ls, cat, clear, ticks, divzero, echo, run <program\n");
     } 
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
         char* filename = input + 4;
 
         if (is_file_protected(filename)) {
-            kprintf("\nError: Access Denied (Protected File)");
+            shell_out_str("Error: Access Denied (Protected File)");
             return;
         }
 
         file_t* f = initrd_open(filename);
 
         if (f) {
-            kprintf("\nLoading program '%s'...\n", filename);
+            shell_out_str("Loading program '");
+            shell_out_str(filename);
+            shell_out_str("'...\n");
             
             // 1. Create a new address space for the app
             extern uint64_t p4_table[]; // Access kernel table
@@ -162,20 +123,20 @@ void execute_command(char* input) {
 
             // 5. Force a full screen redraw to clear the app's mess
             video_draw_desktop();
-            shell_visible = true; // Ensure shell is visible after app return
-            draw_shell_window();
-            kprintf("\nProgram finished.");
+            shell_out_str("Program finished.");
         } else {
-            kprintf("\nProgram not found: %s", filename);
+            shell_out_str("Program not found: ");
+            shell_out_str(filename);
         }
     }
     // 2. LS (List Files)
     else if (strcmp(input, "ls") == 0) {
         file_t* files = initrd_get_files();
-        kprintf("\n--- Filesystem ---\n");
+    shell_out_str("--- Filesystem ---\n");
         for(int i=0; i<MAX_FILES; i++) {
             if(files[i].exists && !is_file_protected(files[i].name)) {
-                kprintf("%s  (%d bytes)\n", files[i].name, files[i].size);
+        shell_out_str(files[i].name);
+        shell_out_str("\n");
             }
         }
     }
@@ -184,27 +145,28 @@ void execute_command(char* input) {
         char* filename = input + 4; // Skip "cat "
 
         if (is_file_protected(filename)) {
-            kprintf("\nError: Access Denied (Protected File)");
+            shell_out_str("Error: Access Denied (Protected File)");
             return;
         }
 
         file_t* f = initrd_open(filename);
         
         if (f) {
-            kprintf("\n");
+            shell_out_str("\n");
             char* content = (char*)f->address;
             for(uint64_t i=0; i < f->size; i++) {
-                kprint_char(content[i]);
+                shell_out_char(content[i]);
             }
         } else {
-            kprintf("\nFile not found: %s", filename);
+            shell_out_str("File not found: ");
+            shell_out_str(filename);
         }
+        shell_out_str("\n"); // Newline after content for clean lines
     }
     else if (strcmp(input, "clear") == 0) {
         video_draw_desktop();
-        draw_shell_window();
         // video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
-        kprintf("root %% ");
+        shell_out_str("root % ");
         return;
     } 
     else if (strcmp(input, "ticks") == 0) {
@@ -228,24 +190,26 @@ void execute_command(char* input) {
 
 void shell_update(char c) {
     shell_check_click();
-    
-    if (!shell_visible) return;
 
     if (c == '\n') {
         command_buffer[buffer_idx] = '\0';
+        shell_out_str("\n");
         execute_command(command_buffer);
         memset(command_buffer, 0, MAX_COMMAND_LEN);
         buffer_idx = 0;
+        shell_out_str("root % ");
     } else if (c == '\b') {
         if (buffer_idx > 0) {
             buffer_idx--;
             command_buffer[buffer_idx] = 0;
             // kprint_char('\b');
+            shell_out_char('\b');
         }
     } else {
         if (buffer_idx < MAX_COMMAND_LEN - 1) {
             command_buffer[buffer_idx++] = c;
             // kprint_char(c);
+            shell_out_char(c);
         }
     }
 }

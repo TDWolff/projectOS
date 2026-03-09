@@ -1,7 +1,16 @@
 #include "keyboard.h"
 #include "vga.h"
 #include "shell.h"
+#include "terminal_window.h"
 #include "../include/ports.h"
+
+// Temporary single-terminal wiring.
+// Later: replace this with focused-window input routing.
+static terminal_window_t* g_term = 0;
+
+void keyboard_set_terminal_window(void* term) {
+    g_term = (terminal_window_t*)term;
+}
 
 static int shift_pressed = 0;
 
