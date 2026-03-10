@@ -7,13 +7,3 @@ icon=terminal.ico
 
 # Terminal is interactive, so keep it foreground.
 background=0
-# Dock manifest for ProjectOS
-# Terminal app (built-in) launcher.
-# Keys: title, app, icon, background
-
-title=Terminal
-app=terminal.pexe
-icon=terminal.ico
-
-# Terminal should open in the foreground.
-background=0
