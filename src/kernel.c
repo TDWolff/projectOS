@@ -16,6 +16,7 @@
 #include "lib/float.h"
 #include "lib/settings.h" // Added settings
 #include "drivers/compositor.h"
+#include "drivers/dock.h"
 
 void kernel_main(void* mb_info) {
     terminal_initialize();
@@ -48,6 +49,9 @@ void kernel_main(void* mb_info) {
         
         // Handle Window Input (Dragging)
         window_handle_mouse(mouse_get_x(), mouse_get_y(), mouse_get_buttons());
+
+    // Dock hover/click + draw icons
+    dock_update(mouse_get_x(), mouse_get_y(), (mouse_get_buttons() & 1) != 0);
         
         // Refresh the screen from double buffer
         compositor_swap_buffers();

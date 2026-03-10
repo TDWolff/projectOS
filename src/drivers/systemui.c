@@ -8,6 +8,7 @@
 #include "../lib/settings.h"
 #include "rtc.h" // Added RTC
 #include "../mem/heap.h" // Cache allocation
+#include "dock.h"
 
 // --- Configuration ---
 
@@ -162,47 +163,22 @@ static void draw_top_bar() {
 }
 
 static void draw_dock() {
-    uint32_t screen_width = get_fb_width();
-    uint32_t screen_height = get_fb_height();
-
-    // Load Settings
-    uint32_t dock_color = settings_get_int("dock_color");
-    int dock_alpha = settings_get_int("dock_alpha");
-    if (dock_color == 0 && settings_get("dock_color") == 0) dock_color = 0xFFD0D0D0; // Default Light Grey
-    if (dock_alpha <= 0) dock_alpha = 120;
-
-    // Calculate width: 90% of screen, clamp min/max
-    uint32_t dock_width = (screen_width * 90) / 100;
-    if (dock_width < 600) dock_width = 600;
-    if (dock_width > screen_width - 40) dock_width = screen_width - 40;
-
-    // Center the dock
-    int x = (screen_width - dock_width) / 2;
-    int y = screen_height - DOCK_HEIGHT - DOCK_BOTTOM_MARGIN;
-
-    // Draw the rounded dock (Glass Effect)
-    graphics_fill_round_rect_alpha(
-        x, y, 
-        dock_width, DOCK_HEIGHT, 
-        DOCK_RADIUS,
-        dock_color, 
-        (uint8_t)dock_alpha, 
-        false, // Border removed
-        0, 
-        true // Glass Blur
-    );
-     
-    // TODO: Draw Application Icons here
+    // Background + icons are owned by dock.c now.
+    dock_update(-1, -1, false);
 }
 
 // --- Public API ---
 
 void systemui_init() {
     draw_top_bar();
+    dock_init();
     draw_dock();
 }
 
 void systemui_update() {
     // Refresh only the clock part using the cached background
     refresh_clock();
+
+    // Re-draw dock icons (and handle click updates from the main loop).
+    // The main loop should call dock_update with real mouse coords.
 }

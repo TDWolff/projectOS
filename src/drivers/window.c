@@ -241,9 +241,6 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
             int btn_start_x = hit_win->x + 18;
             int btn_y = hit_win->y + 16;
             int btn_spacing = 22;
-
-            int dx = mouse_x - btn_start_x;
-            int dy = mouse_y - btn_y;
             if (point_in_circle(mouse_x, mouse_y, btn_start_x, btn_y, BTN_RADIUS)) {
                 // If we were dragging this window somehow, stop.
                 if (dragging_window == hit_win) {
@@ -257,8 +254,6 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
 
             // Zoom (Green) - maximize/restore
             int green_x = btn_start_x + btn_spacing;
-            dx = mouse_x - green_x;
-            dy = mouse_y - btn_y;
             if (point_in_circle(mouse_x, mouse_y, green_x, btn_y, BTN_RADIUS)) {
                 // If we were dragging this window somehow, stop.
                 if (dragging_window == hit_win) {

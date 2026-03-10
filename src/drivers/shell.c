@@ -70,14 +70,14 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    shell_out_str("ls, cat, clear, ticks, divzero, echo, run <program\n");
+    shell_out_str("ls, cat <file>, clear, ticks, divzero, echo <text>, run <program>\n");
     } 
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
         char* filename = input + 4;
 
         if (is_file_protected(filename)) {
-            shell_out_str("Error: Access Denied (Protected File)");
+            shell_out_str("Error: Access Denied (Protected File)\n");
             return;
         }
 
@@ -123,10 +123,11 @@ void execute_command(char* input) {
 
             // 5. Force a full screen redraw to clear the app's mess
             video_draw_desktop();
-            shell_out_str("Program finished.");
+            shell_out_str("Program finished.\n");
         } else {
             shell_out_str("Program not found: ");
             shell_out_str(filename);
+            shell_out_str("\n");
         }
     }
     // 2. LS (List Files)
@@ -145,7 +146,7 @@ void execute_command(char* input) {
         char* filename = input + 4; // Skip "cat "
 
         if (is_file_protected(filename)) {
-            shell_out_str("Error: Access Denied (Protected File)");
+            shell_out_str("Error: Access Denied (Protected File)\n");
             return;
         }
 

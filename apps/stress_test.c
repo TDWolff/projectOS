@@ -1,15 +1,9 @@
 #include "libapp.h"
 
 void _start() {
-    sys_kprintf("Initializing Graphics Stress Test...\n");
-
     fb_info_t fb;
     sys_get_fb_info(&fb);
 
-    if (fb.addr == 0) {
-        sys_kprintf("Error: Could not get framebuffer info.\n");
-        sys_exit();
-    }
 
     uint32_t* screen = (uint32_t*)fb.addr;
     uint32_t width = fb.width;
@@ -29,7 +23,4 @@ void _start() {
             }
         }
     }
-
-    sys_kprintf("Stress Test Complete.\n");
-    sys_exit();
 }

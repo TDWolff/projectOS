@@ -1,0 +1,10 @@
+# Dock manifest for ProjectOS
+# This file lets an app self-register in the dock without kernel code changes.
+# Keys: title, app, icon
+
+title=Stress
+app=stress_test.pexe
+icon=stress.ico
+
+# Optional: if set, clicking the icon runs the app without opening a visible terminal window.
+background=1
