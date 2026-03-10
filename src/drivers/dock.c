@@ -5,6 +5,7 @@
 #include "mouse.h"
 #include "window.h"
 #include "terminal_window.h"
+#include "keyboard.h"
 #include "shell.h"
 #include "../fs/initrd.h"
 #include "../lib/string.h"
@@ -259,6 +260,17 @@ static void dock_draw_icon_scaled(int dst_x, int dst_y, int dst_w, int dst_h, co
 
 static void dock_launch_app(const dock_app_t* app) {
     if (!app) return;
+
+    // If the dock entry is the Terminal launcher, open the kernel terminal window.
+    // This is the most reliable path right now (no userland ABI/input routing needed).
+    if (streq(app->app_path, "terminal.pexe") || streq(app->title, "Terminal")) {
+        terminal_window_t* term = terminal_window_create(240, 160, 640, 420, "Terminal");
+        if (!term) return;
+        if (term->win) window_focus(term->win);
+        shell_set_output_sink(terminal_window_shell_putc, term);
+        keyboard_set_terminal_window(term);
+        return;
+    }
 
     // Background apps: run via shell without creating a visible terminal window.
     if (app->background) {
