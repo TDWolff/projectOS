@@ -13,4 +13,9 @@ int mouse_get_x();
 int mouse_get_y();
 uint8_t mouse_get_buttons();
 
+// Mouse wheel support (PS/2 IntelliMouse).
+// Returns the accumulated wheel delta since last call and resets it to 0.
+// Positive values mean "scroll up" (older), negative = "scroll down".
+int mouse_consume_wheel_delta();
+
 #endif

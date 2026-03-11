@@ -2,6 +2,7 @@
 #include "graphics.h"
 #include "vga.h"
 #include "terminal_window.h"
+#include "mouse.h"
 #include "../mem/heap.h"
 #include "../lib/string.h"
 #include "../lib/colors.h"
@@ -236,6 +237,20 @@ static void window_toggle_maximize(window_t* win) {
 void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
     bool is_pressed = (buttons & 1); // Left click
     bool is_right_pressed = (buttons & 2); // Right click
+
+    // Mouse wheel -> terminal scroll (when focused window is a terminal)
+    // Wheel deltas can arrive even when no buttons are pressed.
+    int wheel = mouse_consume_wheel_delta();
+    if (wheel != 0) {
+        window_t* focused = window_get_focused();
+        if (focused && focused->draw_content_user) {
+            terminal_window_t* term = (terminal_window_t*)focused->draw_content_user;
+            if (term && term->win == focused) {
+                // Convention: wheel positive = up.
+                terminal_window_scroll(term, wheel);
+            }
+        }
+    }
 
     // 1. Mouse Just Pressed: Check for title bar clicks
     if (is_pressed && !was_mouse_pressed) {

@@ -4,3 +4,11 @@ iso_root/boot/limine-bios-cd.bin
 iso_root/boot/limine-uefi-cd.bin
 iso_root/EFI/BOOT/BOOTX64.EFI
 iso_root/*
+
+kernel.bin
+os.iso
+apps/*.o
+src/*/*.o   
+src/*.o
+boot.o
+osstorage/*

@@ -3,10 +3,13 @@
 #include "../include/ports.h"
 
 static uint8_t mouse_cycle = 0;
-static uint8_t mouse_byte[3];
+static uint8_t mouse_packet_size = 3; // 3 = standard PS/2, 4 = IntelliMouse (wheel)
+static uint8_t mouse_byte[4];
 static int mouse_x = 512;
 static int mouse_y = 384;
 static int mouse_scale = 10; // Modified to 1.0x (10/10) default, ignored in new draw
+
+static int g_wheel_accum = 0;
 
 #define MAX_WIDTH 16
 #define MAX_HEIGHT 24
@@ -66,6 +69,34 @@ uint8_t mouse_read() {
     return inb(0x60);
 }
 
+static void mouse_set_sample_rate(uint8_t rate) {
+    mouse_write(0xF3);
+    mouse_read();
+    mouse_write(rate);
+    mouse_read();
+}
+
+static bool mouse_enable_intellimouse() {
+    // IntelliMouse enable sequence: set sample rate to 200, 100, 80.
+    mouse_set_sample_rate(200);
+    mouse_set_sample_rate(100);
+    mouse_set_sample_rate(80);
+
+    // Ask for device ID.
+    mouse_write(0xF2);
+    mouse_read();
+    uint8_t id = mouse_read();
+
+    // 0x03 indicates IntelliMouse (wheel).
+    if (id == 0x03) {
+        mouse_packet_size = 4;
+        return true;
+    }
+
+    mouse_packet_size = 3;
+    return false;
+}
+
 /* --- Internal Graphics Helpers --- */
 
 // New function to draw directly to a compositing buffer (bypassing the global putpixel)
@@ -109,6 +140,12 @@ int mouse_get_x() { return mouse_x; }
 int mouse_get_y() { return mouse_y; }
 uint8_t mouse_get_buttons() { return mouse_byte[0] & 0x07; }
 
+int mouse_consume_wheel_delta() {
+    int d = g_wheel_accum;
+    g_wheel_accum = 0;
+    return d;
+}
+
 void mouse_set_scale(int scale_x10) {
     if (scale_x10 < 5) scale_x10 = 5;      // 0.5x minimum
     if (scale_x10 > 40) scale_x10 = 40;    // 4.0x maximum
@@ -138,6 +175,9 @@ void mouse_init() {
     mouse_write(0xF4); // Enable data reporting
     mouse_read();
 
+    // Try to enable wheel support (won't break if unsupported).
+    mouse_enable_intellimouse();
+
     // No initial draw needed, compositor loop handles it
 }
 
@@ -147,41 +187,45 @@ void mouse_handler() {
 
     uint8_t data = inb(0x60);
 
-    switch(mouse_cycle) {
-        case 0:
-            if (!(data & 0x08)) return; // Sync check
-            mouse_byte[0] = data;
-            mouse_cycle++;
-            break;
-        case 1:
-            mouse_byte[1] = data;
-            mouse_cycle++;
-            break;
-        case 2:
-            mouse_byte[2] = data;
-            
-            // Note: No restore_bg() calls needed anymore!
-            
-            // Update mouse movement
-            int x_offset = (int8_t)mouse_byte[1];
-            int y_offset = (int8_t)mouse_byte[2];
-
-            mouse_x += x_offset;
-            mouse_y -= y_offset; // PS/2 Y is inverted
-
-            // Clamp to screen bounds
-            int w = (int)get_fb_width();
-            int h = (int)get_fb_height();
-            
-            // Mouse tip should stay within screen
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x >= w) mouse_x = w - 1;
-            if (mouse_y >= h) mouse_y = h - 1;
-
-            // No draw_cursor() needed!
-            
-            mouse_cycle = 0;
-            break;
+    // Collect a full packet.
+    if (mouse_cycle == 0) {
+        // Sync check: bit 3 must be set in first byte.
+        if (!(data & 0x08)) return;
     }
+
+    mouse_byte[mouse_cycle] = data;
+    mouse_cycle++;
+
+    if (mouse_cycle < mouse_packet_size) return;
+
+    // Packet complete.
+    mouse_cycle = 0;
+
+    // Movement
+    int x_offset = (int8_t)mouse_byte[1];
+    int y_offset = (int8_t)mouse_byte[2];
+
+    // Apply scaling (mouse_scale is x10).
+    x_offset = (x_offset * mouse_scale) / 10;
+    y_offset = (y_offset * mouse_scale) / 10;
+
+    mouse_x += x_offset;
+    mouse_y -= y_offset; // PS/2 Y is inverted
+
+    // Wheel
+    if (mouse_packet_size == 4) {
+        int8_t z = (int8_t)mouse_byte[3];
+        // Convention: positive z = wheel up.
+        if (z != 0) {
+            g_wheel_accum += (int)z;
+        }
+    }
+
+    // Clamp to screen bounds
+    int w = (int)get_fb_width();
+    int h = (int)get_fb_height();
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_x >= w) mouse_x = w - 1;
+    if (mouse_y >= h) mouse_y = h - 1;
 }
