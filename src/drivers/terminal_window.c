@@ -6,9 +6,67 @@
 #include "../lib/string.h"
 #include "../mem/heap.h"
 
-// Font assumptions (matches your existing title centering math)
-#define TERM_CHAR_W 8
-#define TERM_CHAR_H 16
+// Font assumptions are defined in `terminal_window.h`.
+
+// Scrollback size in lines (only as far as this window existed).
+// Memory: capacity * rows * cols bytes. Example: 256 lines * 120 cols = ~30KB.
+#define TERM_SCROLLBACK_DEFAULT_CAPACITY 256
+
+static inline int term_scrollback_index(const terminal_window_t* term, int logical_row) {
+    // logical_row: 0..scrollback_count-1
+    int idx = term->scrollback_start + logical_row;
+    if (idx >= term->scrollback_capacity) idx -= term->scrollback_capacity;
+    return idx;
+}
+
+static void term_scrollback_clear_row(terminal_window_t* term, int physical_row) {
+    memset(term->scrollback + physical_row * term->cols, ' ', (size_t)term->cols);
+}
+
+static void term_scrollback_append_blank_line(terminal_window_t* term) {
+    if (!term || !term->scrollback) return;
+
+    if (term->scrollback_count < term->scrollback_capacity) {
+        int pr = term_scrollback_index(term, term->scrollback_count);
+        term_scrollback_clear_row(term, pr);
+        term->scrollback_count++;
+        return;
+    }
+
+    // Full: drop oldest (advance start), reuse the freed physical row for the new one.
+    term->scrollback_start++;
+    if (term->scrollback_start >= term->scrollback_capacity) term->scrollback_start = 0;
+    // Count stays at capacity.
+    int pr = term_scrollback_index(term, term->scrollback_count - 1);
+    term_scrollback_clear_row(term, pr);
+}
+
+static void term_sync_visible_cells(terminal_window_t* term) {
+    if (!term || !term->cells || !term->scrollback) return;
+
+    // Clamp offset.
+    int max_offset = term->scrollback_count - term->rows;
+    if (max_offset < 0) max_offset = 0;
+    if (term->scroll_offset < 0) term->scroll_offset = 0;
+    if (term->scroll_offset > max_offset) term->scroll_offset = max_offset;
+
+    int bottom_first_row = term->scrollback_count - term->rows;
+    if (bottom_first_row < 0) bottom_first_row = 0;
+    int first_row = bottom_first_row - term->scroll_offset;
+    if (first_row < 0) first_row = 0;
+
+    // Copy scrollback -> visible grid.
+    for (int r = 0; r < term->rows; r++) {
+        int sr = first_row + r;
+        if (sr < 0 || sr >= term->scrollback_count) {
+            memset(term->cells + r * term->cols, ' ', (size_t)term->cols);
+            continue;
+        }
+
+        int pr = term_scrollback_index(term, sr);
+        memcpy(term->cells + r * term->cols, term->scrollback + pr * term->cols, (size_t)term->cols);
+    }
+}
 
 static void term_clear_cells(terminal_window_t* term) {
     if (!term || !term->cells) return;
@@ -16,19 +74,29 @@ static void term_clear_cells(terminal_window_t* term) {
     memset(term->cells, ' ', (size_t)(term->cols * term->rows));
     term->cursor_col = 0;
     term->cursor_row = 0;
+
+    // Clear scrollback too.
+    if (term->scrollback) {
+        memset(term->scrollback, ' ', (size_t)(term->scrollback_capacity * term->cols));
+        term->scrollback_start = 0;
+        term->scrollback_count = 0;
+        term->scroll_offset = 0;
+        // Ensure at least one line exists.
+        term_scrollback_append_blank_line(term);
+        term_sync_visible_cells(term);
+    }
 }
 
 static void term_scroll_up(terminal_window_t* term) {
-    if (!term || !term->cells) return;
-    if (term->rows <= 1) return;
+    // Terminal "scroll" is now represented by adding a new blank line to scrollback.
+    // Visible scrolling is handled via `scroll_offset`.
+    if (!term) return;
+    term_scrollback_append_blank_line(term);
 
-    // Move rows 1..end up to 0..end-1
-    int row_bytes = term->cols;
-    memcpy(term->cells, term->cells + row_bytes, (size_t)(row_bytes * (term->rows - 1)));
-    // Clear the last row so newly exposed pixels always draw as blank space.
-    memset(term->cells + row_bytes * (term->rows - 1), ' ', (size_t)row_bytes);
-
-    if (term->cursor_row > 0) term->cursor_row--;
+    // When at bottom-follow mode, keep viewport pinned to bottom.
+    if (term->scroll_offset == 0) {
+        term_sync_visible_cells(term);
+    }
 }
 
 static void terminal_window_draw(window_t* win, void* user) {
@@ -70,6 +138,9 @@ static void terminal_window_draw(window_t* win, void* user) {
         }
     }
 
+    // Ensure cells reflect current scrollback view.
+    term_sync_visible_cells(term);
+
     for (int r = 0; r < max_rows; r++) {
         int y = base_y + r * TERM_CHAR_H;
         // quick reject if outside content
@@ -86,16 +157,18 @@ static void terminal_window_draw(window_t* win, void* user) {
         }
     }
 
-    // Cursor (invert block)
-    int cur_x = base_x + term->cursor_col * TERM_CHAR_W;
-    int cur_y = base_y + term->cursor_row * TERM_CHAR_H;
-    if (cur_x + TERM_CHAR_W <= cx + cw && cur_y + TERM_CHAR_H <= cy + ch) {
-        graphics_fill_rect_alpha(cur_x, cur_y, TERM_CHAR_W, TERM_CHAR_H, term->fg, 255, false, 0, false);
-    char under = term->cells[term->cursor_row * max_cols + term->cursor_col];
-    // Cells are space-filled, but keep this defensive fallback anyway.
-    if (under == 0) under = ' ';
-    s[0] = (under == ' ') ? '_' : under;
-    video_draw_text(cur_x, cur_y, s, term->bg);
+    // Cursor (only when following bottom; when scrolled up we hide it).
+    if (term->scroll_offset == 0) {
+        int cur_x = base_x + term->cursor_col * TERM_CHAR_W;
+        int cur_y = base_y + term->cursor_row * TERM_CHAR_H;
+        if (cur_x + TERM_CHAR_W <= cx + cw && cur_y + TERM_CHAR_H <= cy + ch) {
+            graphics_fill_rect_alpha(cur_x, cur_y, TERM_CHAR_W, TERM_CHAR_H, term->fg, 255, false, 0, false);
+            char under = term->cells[term->cursor_row * max_cols + term->cursor_col];
+            // Cells are space-filled, but keep this defensive fallback anyway.
+            if (under == 0) under = ' ';
+            s[0] = (under == ' ') ? '_' : under;
+            video_draw_text(cur_x, cur_y, s, term->bg);
+        }
     }
 }
 
@@ -143,6 +216,16 @@ terminal_window_t* terminal_window_create(int x, int y, int width, int height, c
         return 0;
     }
 
+    term->scrollback_capacity = TERM_SCROLLBACK_DEFAULT_CAPACITY;
+    if (term->scrollback_capacity < term->rows) term->scrollback_capacity = term->rows;
+    term->scrollback = (char*)kmalloc((size_t)(term->scrollback_capacity * term->cols));
+    if (!term->scrollback) {
+        kfree(term->cells);
+        window_close(term->win);
+        kfree(term);
+        return 0;
+    }
+
     term_clear_cells(term);
 
     // Register as window content renderer so it always draws on top of chrome.
@@ -170,6 +253,11 @@ void terminal_window_destroy(terminal_window_t* term) {
         term->cells = 0;
     }
 
+    if (term->scrollback) {
+        kfree(term->scrollback);
+        term->scrollback = 0;
+    }
+
     kfree(term);
 }
 
@@ -181,9 +269,26 @@ void terminal_window_input(terminal_window_t* term, char c) {
     if (c == '\n') {
         term->cursor_col = 0;
         term->cursor_row++;
-        if (term->cursor_row >= term->rows) {
+
+        // If user was viewing history, keep their scroll offset while new output arrives.
+        // If they were at bottom, remain at bottom.
+        if (term->cursor_row >= term->scrollback_count) {
             term_scroll_up(term);
-            term->cursor_row = term->rows - 1;
+        }
+
+        // Clamp cursor to visible area for rendering when at bottom.
+        if (term->cursor_row >= term->scrollback_count) term->cursor_row = term->scrollback_count - 1;
+
+        // Map cursor_row (in scrollback space) to visible row when following bottom.
+        if (term->scroll_offset == 0) {
+            // Keep cursor pinned within visible grid.
+            int bottom_first_row = term->scrollback_count - term->rows;
+            if (bottom_first_row < 0) bottom_first_row = 0;
+            int vis_row = term->cursor_row - bottom_first_row;
+            if (vis_row < 0) vis_row = 0;
+            if (vis_row >= term->rows) vis_row = term->rows - 1;
+            term->cursor_row = bottom_first_row + vis_row;
+            term_sync_visible_cells(term);
         }
         return;
     }
@@ -195,24 +300,51 @@ void terminal_window_input(terminal_window_t* term, char c) {
             term->cursor_row--;
             term->cursor_col = term->cols - 1;
         }
-        term->cells[term->cursor_row * term->cols + term->cursor_col] = ' ';
+        // Apply backspace to scrollback line.
+        if (term->scrollback && term->cursor_row >= 0 && term->cursor_row < term->scrollback_count) {
+            int pr = term_scrollback_index(term, term->cursor_row);
+            term->scrollback[pr * term->cols + term->cursor_col] = ' ';
+        }
+        if (term->scroll_offset == 0) term_sync_visible_cells(term);
         return;
     }
 
     // printable
     if ((unsigned char)c < 32) return;
 
-    term->cells[term->cursor_row * term->cols + term->cursor_col] = c;
+    // Ensure the current scrollback line exists.
+    while (term->cursor_row >= term->scrollback_count) {
+        term_scrollback_append_blank_line(term);
+    }
+
+    // Write to scrollback.
+    int pr = term_scrollback_index(term, term->cursor_row);
+    term->scrollback[pr * term->cols + term->cursor_col] = c;
     term->cursor_col++;
 
     if (term->cursor_col >= term->cols) {
         term->cursor_col = 0;
         term->cursor_row++;
-        if (term->cursor_row >= term->rows) {
+        if (term->cursor_row >= term->scrollback_count) {
             term_scroll_up(term);
-            term->cursor_row = term->rows - 1;
         }
     }
+
+    if (term->scroll_offset == 0) term_sync_visible_cells(term);
+}
+
+void terminal_window_scroll(terminal_window_t* term, int delta_lines) {
+    if (!term) return;
+    if (delta_lines == 0) return;
+
+    term->scroll_offset += delta_lines;
+
+    int max_offset = term->scrollback_count - term->rows;
+    if (max_offset < 0) max_offset = 0;
+    if (term->scroll_offset < 0) term->scroll_offset = 0;
+    if (term->scroll_offset > max_offset) term->scroll_offset = max_offset;
+
+    term_sync_visible_cells(term);
 }
 
 void terminal_window_shell_putc(char c, void* user) {

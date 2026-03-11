@@ -1,6 +1,7 @@
 #include "window.h"
 #include "graphics.h"
 #include "vga.h"
+#include "terminal_window.h"
 #include "../mem/heap.h"
 #include "../lib/string.h"
 #include "../lib/colors.h"
@@ -34,6 +35,11 @@ static window_t* g_focused_window = 0;
 
 // Track last mouse button state for edge-triggered clicks
 static bool was_mouse_pressed = false;
+
+// "Wheel" emulation: Hold right mouse button and move mouse vertically to scroll.
+static bool was_right_pressed = false;
+static int scroll_anchor_y = 0;
+static int scroll_accum_y = 0;
 
 static void window_focus_internal(window_t* win);
 
@@ -229,6 +235,7 @@ static void window_toggle_maximize(window_t* win) {
 
 void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
     bool is_pressed = (buttons & 1); // Left click
+    bool is_right_pressed = (buttons & 2); // Right click
 
     // 1. Mouse Just Pressed: Check for title bar clicks
     if (is_pressed && !was_mouse_pressed) {
@@ -327,12 +334,46 @@ void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons) {
         }
     }
 
+    // 2b. Terminal scroll gesture (right-click + move up/down)
+    // This avoids needing real PS/2 wheel packet decoding.
+    if (is_right_pressed && !was_right_pressed) {
+        scroll_anchor_y = mouse_y;
+        scroll_accum_y = 0;
+    }
+
+    if (is_right_pressed) {
+        window_t* focused = window_get_focused();
+        if (focused && focused->draw_content_user) {
+            // Heuristic: terminal windows store a `terminal_window_t*` as draw_content_user.
+            terminal_window_t* term = (terminal_window_t*)focused->draw_content_user;
+            if (term && term->win == focused) {
+                int dy = mouse_y - scroll_anchor_y;
+                scroll_anchor_y = mouse_y;
+                scroll_accum_y += dy;
+
+                // One line per ~half a character cell.
+                int step = TERM_CHAR_H / 2;
+                if (step < 1) step = 1;
+
+                while (scroll_accum_y <= -step) {
+                    terminal_window_scroll(term, +1);
+                    scroll_accum_y += step;
+                }
+                while (scroll_accum_y >= step) {
+                    terminal_window_scroll(term, -1);
+                    scroll_accum_y -= step;
+                }
+            }
+        }
+    }
+
     // 3. Mouse Released: Stop Dragging
     if (!is_pressed) {
         dragging_window = 0;
     }
 
     was_mouse_pressed = is_pressed;
+    was_right_pressed = is_right_pressed;
 }
 
 // Iterate and draw all windows
