@@ -18,24 +18,6 @@ The project currently includes:
 
 ---
 
-## Repository layout
-
-High-level folders you’ll care about most:
-
-- `src/` — Kernel source
-  - `src/kernel.c` — Kernel entry and main loop
-  - `src/drivers/` — Video/graphics, compositor, UI, input drivers
-  - `src/mem/` — Physical/virtual memory code + heap
-  - `src/cpu/` — IDT/interrupt stubs and CPU helpers
-  - `src/fs/` — Initrd support
-  - `src/lib/` — Tiny libc-like helpers (string/stdio/colors/utils)
-- `limine/` — Limine binaries and tools
-- `iso_root/` — ISO staging directory (generated)
-- `osstorage/` — Files intended to be packed into the initrd / storage image (settings, apps, etc.)
-- `apps/` — Simple user programs and a small syscall wrapper library
-
----
-
 ## Prerequisites
 
 You’ll need:
@@ -122,18 +104,6 @@ Example keys:
 
 ---
 
-## Notes on the graphics/compositor model
-
-The compositor uses a tri-buffer approach:
-
-1. **canvas buffer**: persistent desktop layer (wallpaper + system ui)
-2. **backbuffer**: per-frame composition buffer (canvas + windows + mouse cursor)
-3. **frontbuffer**: the physical framebuffer
-
-Apps and UI components generally draw onto the canvas; the compositor rebuilds the final frame each tick.
-
----
-
 ## Development tips
 
 - Window dragging logic is in `src/drivers/window.c` (`window_handle_mouse`).
@@ -144,4 +114,4 @@ Apps and UI components generally draw onto the canvas; the compositor rebuilds t
 
 ## License
 
-No explicit license file is included in the repository snapshot. If you want this to be open source, add a `LICENSE` file and update this section.
+No license included, this project is open source. Feel free to use the code as you like, I'll continue to provide updates and improvements as I work on the OS. If you find any bugs or have suggestions, please open an issue or submit a pull request!
