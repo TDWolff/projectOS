@@ -29,6 +29,9 @@
 static window_t* window_list_head = 0;
 static window_t* window_list_tail = 0;
 
+// The currently focused window (top-most active).
+static window_t* g_focused_window = 0;
+
 // Track last mouse button state for edge-triggered clicks
 static bool was_mouse_pressed = false;
 
@@ -36,6 +39,16 @@ static void window_focus_internal(window_t* win);
 
 static bool point_in_rect(int px, int py, int x, int y, int w, int h) {
     return (px >= x && px < x + w && py >= y && py < y + h);
+}
+
+window_t* window_get_focused() {
+    return g_focused_window;
+}
+
+void window_set_char_input_handler(window_t* win, void (*on_char_input)(window_t* win, char c, void* user), void* user) {
+    if (!win) return;
+    win->on_char_input = on_char_input;
+    win->on_char_input_user = user;
 }
 
 static bool point_in_circle(int px, int py, int cx, int cy, int r) {
@@ -77,6 +90,7 @@ void window_close(window_t* win) {
     // Keep a single close path so it also cancels dragging, etc.
     if (!win) return;
     window_remove(win);
+    if (g_focused_window == win) g_focused_window = 0;
 }
 
 static void window_register(window_t* win) {
@@ -134,6 +148,8 @@ window_t* window_create(int x, int y, int width, int height, const char* title) 
     win->y = y;
     win->width = width;
     win->height = height;
+    // New windows start focused by default.
+    g_focused_window = win;
     
     // Copy title safely
     int i;

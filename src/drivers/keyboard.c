@@ -1,16 +1,9 @@
 #include "keyboard.h"
-#include "vga.h"
+// VGA text mode is no longer used.
+// #include "vga.h"
 #include "shell.h"
-#include "terminal_window.h"
+#include "window.h"
 #include "../include/ports.h"
-
-// Temporary single-terminal wiring.
-// Later: replace this with focused-window input routing.
-static terminal_window_t* g_term = 0;
-
-void keyboard_set_terminal_window(void* term) {
-    g_term = (terminal_window_t*)term;
-}
 
 static int shift_pressed = 0;
 
@@ -59,7 +52,15 @@ void keyboard_handler() {
         }
 
         if (c > 0) {
-            shell_update(c);
+            // Focus-based input routing.
+            // If a focused window has an input handler, deliver there.
+            // Otherwise, fall back to shell parsing.
+            window_t* focused = window_get_focused();
+            if (focused && focused->on_char_input) {
+                focused->on_char_input(focused, c, focused->on_char_input_user);
+            } else {
+                shell_update(c);
+            }
         }
     }
 }

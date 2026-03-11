@@ -7,6 +7,7 @@
 #include "terminal_window.h"
 #include "keyboard.h"
 #include "shell.h"
+#include "../lib/settings.h"
 #include "../fs/initrd.h"
 #include "../lib/string.h"
 #include "../mem/heap.h"
@@ -268,7 +269,7 @@ static void dock_launch_app(const dock_app_t* app) {
         if (!term) return;
         if (term->win) window_focus(term->win);
         shell_set_output_sink(terminal_window_shell_putc, term);
-        keyboard_set_terminal_window(term);
+    shell_print_prompt();
         return;
     }
 

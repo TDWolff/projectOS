@@ -35,12 +35,10 @@ void kernel_main(void* mb_info) {
     // Initialize System UI (Top Bar, Dock)
     systemui_init();
 
-    // Create Terminal window on startup (window manager owns chrome; terminal draws content)
-    terminal_window_t* terminal = terminal_window_create(240, 160, 640, 420, "Terminal");
-    keyboard_set_terminal_window(terminal);
-
+    // Initialize shell without opening a terminal window by default.
+    // The dock launcher can create/focus a terminal window and attach the shell output sink.
     shell_init();
-    shell_set_output_sink(terminal_window_shell_putc, terminal);
+    shell_set_output_sink(0, 0);
 
     uint64_t last_tick = 0;
 

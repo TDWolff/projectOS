@@ -6,8 +6,7 @@
 void keyboard_init();
 void keyboard_handler();
 
-// Temporary: route decoded characters to a single terminal window.
-// (Eventually this should be focus-based input routing in the window manager.)
-void keyboard_set_terminal_window(void* term);
+// Input routing is focus-based via the window manager.
+// `keyboard_handler` will deliver decoded characters to the focused window.
 
 #endif

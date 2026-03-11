@@ -9,4 +9,8 @@ void shell_check_click();
 // If unset, shell will be logic-only and won't print.
 void shell_set_output_sink(void (*putc_cb)(char c, void* user), void* user);
 
+// Prints "<username> % " to the current output sink.
+// The shell owns prompt logic; UI code should call this after wiring a sink.
+void shell_print_prompt();
+
 #endif

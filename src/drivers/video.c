@@ -249,12 +249,13 @@ void kprint_char(char c) {
         cursor_y += loaded_font.height;
     }
 
-    // SCROLLING: If we hit the bottom of the area, move up
+    // NOTE: Legacy text-mode style scrolling cleared a hard-coded rectangle.
+    // The windowed terminal (`terminal_window.c`) now owns terminal scrolling.
+    // Clearing here can cause a one-time black rectangle when output reaches
+    // the bottom of the windowed terminal.
     if (cursor_y >= area_y + area_h - loaded_font.height) {
-        // Simplified: just reset to top of window for now
         cursor_y = area_y;
-        // In a full OS we'd blit the window up
-        draw_rect(area_x, area_y, area_w, area_h, 0x000000); 
+        // Intentionally do NOT clear any pixels here.
     }
 }
 

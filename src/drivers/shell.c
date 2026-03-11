@@ -1,5 +1,6 @@
 #include "shell.h"
-#include "vga.h"
+// NOTE: Shell is logic-only now. Keep VGA out of this module.
+// #include "vga.h"
 #include "timer.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
@@ -29,6 +30,13 @@ static void shell_out_str(const char* s) {
     for (int i = 0; s[i]; i++) shell_out_char(s[i]);
 }
 
+void shell_print_prompt() {
+    const char* username = settings_get("username");
+    if (!username || !username[0]) username = "root";
+    shell_out_str(username);
+    shell_out_str(" % ");
+}
+
 // List of files to exclude from user view/access
 static const char* protected_files[] = {
     "settings.pset",
@@ -51,16 +59,15 @@ static int buffer_idx = 0;
 void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
     buffer_idx = 0;
-    
-    // Load background color from settings
-    uint32_t bg = settings_get_int("bg_color");
-    if (bg == 0) bg = 0x008080; // Default Teal
-    
-    // Set terminal background
-    terminal_set_bg(bg);
-    
+
+    // VGA text terminal is no longer used. Background and desktop rendering
+    // are handled by the compositor/windowing layer.
+
     // Shell no longer draws its own window. Rendering/hosting is handled by the
     // window manager (or by compositor/system UI) exclusively.
+
+    // Print initial prompt to the current output sink.
+    shell_print_prompt();
 }
 
 void shell_check_click() {
@@ -121,8 +128,8 @@ void execute_command(char* input) {
             // 4. Return to kernel address space
             vmm_switch_pagemap((uint64_t*)kernel_pagemap);
 
-            // 5. Force a full screen redraw to clear the app's mess
-            video_draw_desktop();
+            // 5. UI redraw is handled elsewhere (compositor/window manager).
+            // The shell is logic-only and shouldn't call rendering functions directly.
             shell_out_str("Program finished.\n");
         } else {
             shell_out_str("Program not found: ");
@@ -133,7 +140,6 @@ void execute_command(char* input) {
     // 2. LS (List Files)
     else if (strcmp(input, "ls") == 0) {
         file_t* files = initrd_get_files();
-    shell_out_str("--- Filesystem ---\n");
         for(int i=0; i<MAX_FILES; i++) {
             if(files[i].exists && !is_file_protected(files[i].name)) {
         shell_out_str(files[i].name);
@@ -165,9 +171,10 @@ void execute_command(char* input) {
         shell_out_str("\n"); // Newline after content for clean lines
     }
     else if (strcmp(input, "clear") == 0) {
-        video_draw_desktop();
-        // video_set_cursor(SHELL_X + 10, SHELL_Y + 35);
-        shell_out_str("root % ");
+    // Shell is logic-only: clear just emits a couple newlines for now.
+    // (A future terminal UI can implement a real clear-screen escape.)
+    shell_out_str("\n\n");
+    shell_print_prompt();
         return;
     } 
     else if (strcmp(input, "ticks") == 0) {
@@ -198,7 +205,7 @@ void shell_update(char c) {
         execute_command(command_buffer);
         memset(command_buffer, 0, MAX_COMMAND_LEN);
         buffer_idx = 0;
-        shell_out_str("root % ");
+    shell_print_prompt();
     } else if (c == '\b') {
         if (buffer_idx > 0) {
             buffer_idx--;

@@ -21,6 +21,11 @@ typedef struct window_t {
     // Called after the window frame is drawn, so content appears on top.
     void (*draw_content)(struct window_t* win, void* user);
     void* draw_content_user;
+
+    // Optional per-window character input callback.
+    // When this window is focused, decoded keyboard chars are delivered here.
+    void (*on_char_input)(struct window_t* win, char c, void* user);
+    void* on_char_input_user;
     // Pointers for future use (e.g., content buffer, next window in stack)
     struct window_t* next;
 } window_t;
@@ -52,5 +57,11 @@ void window_get_content_rect(window_t* win, int* out_x, int* out_y, int* out_w, 
 // Check if mouse interacts with any window (Dragging logic)
 // To be called every frame or upon mouse event
 void window_handle_mouse(int mouse_x, int mouse_y, uint8_t buttons);
+
+// Focus helpers
+window_t* window_get_focused();
+
+// Register a per-window character input handler.
+void window_set_char_input_handler(window_t* win, void (*on_char_input)(window_t* win, char c, void* user), void* user);
 
 #endif
