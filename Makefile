@@ -75,7 +75,60 @@ iso: kernel.bin limine/limine
 	./limine/limine bios-install os.iso
 
 run: app iso
-	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa
+	# Create a persistent IDE disk image if missing.
+	@if [ ! -f disk.img ]; then \
+		echo "Creating disk.img (64MB)..."; \
+		dd if=/dev/zero of=disk.img bs=1m count=64 status=none; \
+	fi
+	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa \
+		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
+		-boot order=d,menu=on
+
+# Same as run, but with serial logs and no automatic reboot.
+run-debug: app iso
+	@if [ ! -f disk.img ]; then \
+		echo "Creating disk.img (64MB)..."; \
+		dd if=/dev/zero of=disk.img bs=1m count=64 status=none; \
+	fi
+		qemu-system-x86_64 \
+		-cdrom os.iso \
+		-m 512M \
+		-vga std \
+		-display cocoa \
+		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
+		-boot order=d,menu=on \
+		-serial vc \
+		-no-reboot
+
+# Host helper: create/partition/format disk.img and copy a settings.pset into it.
+# Requires: gdisk (or sgdisk), mtools (mcopy), and a FAT mkfs (mkfs.fat).
+# On macOS you can usually get these via Homebrew.
+disk-init:
+	@echo "(Re)initializing disk.img as GPT + FAT32..."
+	@rm -f disk.img
+	@dd if=/dev/zero of=disk.img bs=1m count=64 status=none
+	@# Create a single FAT32 partition starting at LBA 2048.
+	@# Prefer sgdisk if present.
+	@if command -v sgdisk >/dev/null 2>&1; then \
+		sgdisk -o -n 1:2048:0 -t 1:0700 -c 1:user disk.img >/dev/null; \
+	else \
+		echo "sgdisk not found; please install gptfdisk (provides sgdisk)."; \
+		exit 1; \
+	fi
+	@# Format the partition region as FAT32 using mtools (no loop-mount needed).
+	@# Partition starts at 2048 * 512 = 1048576 bytes.
+	@if command -v mformat >/dev/null 2>&1; then \
+		MTOOLS_SKIP_CHECK=1 mformat -i disk.img@@1048576 -F :: >/dev/null; \
+	else \
+		echo "mtools not found; please install mtools (mformat/mcopy)."; \
+		exit 1; \
+	fi
+	@if [ -f osstorage/settings.pset ]; then \
+		MTOOLS_SKIP_CHECK=1 mcopy -i disk.img@@1048576 osstorage/settings.pset ::SETTINGS.PSET >/dev/null; \
+		echo "Seeded /user/SETTINGS.PSET from osstorage/settings.pset"; \
+	else \
+		echo "Note: osstorage/settings.pset not found; skipping seed copy."; \
+	fi
 
 app:
 	make -f Makefile.apps

@@ -12,3 +12,5 @@ src/*/*.o
 src/*.o
 boot.o
 osstorage/*
+*.o
+*.img
