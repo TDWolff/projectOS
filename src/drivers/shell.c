@@ -77,7 +77,7 @@ static bool shell_pfs_ls_cb(const char* name, bool is_dir, void* user) {
 
 static bool shell_ls_user_root() {
     g_ls_user_count = 0;
-    if (!pfs_list_user_root(shell_pfs_ls_cb, 0)) return false;
+    if (!pfs_list_user_root_long(shell_pfs_ls_cb, 0)) return false;
     if (g_ls_user_count == 0) shell_out_str("  (empty)\n");
     return true;
 }

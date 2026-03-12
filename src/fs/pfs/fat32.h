@@ -31,4 +31,17 @@ bool fat32_read_root_file(const fat32_fs_t* fs, const char* name, uint8_t** out_
 typedef bool (*fat32_list_cb_t)(const char* name, bool is_dir, void* user);
 bool fat32_list_root(const fat32_fs_t* fs, fat32_list_cb_t cb, void* user);
 
+// Long filename (VFAT) helpers.
+// If an LFN exists for an entry, it will be used; otherwise the 8.3 name is used.
+// All names passed to callbacks are NUL-terminated.
+#define FAT32_LFN_MAX_CHARS 255
+
+// Read an entire file from the root directory by *long* name (case-insensitive ASCII).
+// Falls back to 8.3 matching if no LFN entries are present.
+bool fat32_read_root_file_long(const fat32_fs_t* fs, const char* name, uint8_t** out_buf, uint32_t* out_size);
+
+// Iterate root-directory entries using long name when present.
+typedef bool (*fat32_list_lfn_cb_t)(const char* name, bool is_dir, void* user);
+bool fat32_list_root_long(const fat32_fs_t* fs, fat32_list_lfn_cb_t cb, void* user);
+
 #endif

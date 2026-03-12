@@ -5,6 +5,14 @@
 #include "../../lib/string.h"
 #include "../../mem/heap.h"
 
+// Enable verbose debugging for FAT32 directory enumeration.
+// When enabled, fat32_list_root_long() prints whether each entry is emitted via
+// VFAT LFN (case-preserving) or SFN (8.3, usually uppercase).
+// Keep this off by default to avoid spam.
+#ifndef FAT32_DEBUG_LS
+#define FAT32_DEBUG_LS 0
+#endif
+
 static uint16_t rd16le(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static uint32_t rd32le(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -57,6 +65,18 @@ typedef struct {
     uint16_t fst_clus_lo;
     uint32_t file_size;
 } fat_dirent_t;
+
+// VFAT Long File Name entry (attribute 0x0F)
+typedef struct {
+    uint8_t ord;
+    uint16_t name1[5];
+    uint8_t attr;
+    uint8_t type;
+    uint8_t chksum;
+    uint16_t name2[6];
+    uint16_t fst_clus_lo;
+    uint16_t name3[2];
+} fat_lfn_t;
 #pragma pack(pop)
 
 static uint32_t cluster_to_lba(const fat32_fs_t* fs, uint32_t cluster) {
@@ -133,6 +153,135 @@ static void name_83_to_string(const uint8_t in11[11], char out[13]) {
         for (int i = 0; i < elen; i++) out[o++] = (char)in11[8 + i];
     }
     out[o] = 0;
+}
+
+static int to_lower_ascii(int c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+static bool str_ieq_ascii(const char* a, const char* b) {
+    if (!a || !b) return false;
+    int i = 0;
+    while (a[i] && b[i]) {
+        if (to_lower_ascii(a[i]) != to_lower_ascii(b[i])) return false;
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+static void lfn_reset(char* lfn, int* lfn_len, bool* have_lfn, uint8_t* lfn_chksum) {
+    if (lfn && FAT32_LFN_MAX_CHARS > 0) {
+        // Initialize buffer to NUL so partial writes always end up as a valid C string.
+    // NOTE: lfn is sized as FAT32_LFN_MAX_CHARS, where the last byte is reserved
+    // for the NUL terminator.
+    memset(lfn, 0, FAT32_LFN_MAX_CHARS);
+    }
+    if (lfn_len) *lfn_len = 0;
+    if (have_lfn) *have_lfn = false;
+    if (lfn_chksum) *lfn_chksum = 0;
+}
+
+static void lfn_write_code_unit_at(uint16_t cu, char* out, int pos) {
+    if (!out || pos < 0 || pos >= (FAT32_LFN_MAX_CHARS - 1)) return;
+
+    // VFAT stores UCS-2/UTF-16LE code units.
+    // We only keep ASCII subset for now, but we must preserve the exact case
+    // that the on-disk name uses (never force upper/lower here).
+    if (cu == 0x0000 || cu == 0xFFFF) {
+        // 0x0000 terminator or 0xFFFF padding
+        return;
+    }
+    char c = (cu <= 0x007F) ? (char)cu : '?';
+
+    // Defensive: if something upstream accidentally fed us flipped-case ASCII,
+    // don't try to be clever; always emit exactly what we decoded.
+    out[pos] = c;
+}
+
+static void lfn_finalize(char* lfn, int* lfn_len) {
+    if (!lfn || !lfn_len) return;
+
+    // Compute actual length up to first NUL.
+    int i = 0;
+    while (i < (FAT32_LFN_MAX_CHARS - 1) && lfn[i] != 0) i++;
+    *lfn_len = i;
+    lfn[i] = 0;
+}
+
+static void lfn_consume_entry(const fat_lfn_t* le, char* lfn, int* lfn_len, bool* have_lfn, uint8_t* lfn_chksum) {
+    if (!le || !lfn || !lfn_len || !have_lfn) return;
+
+    uint8_t ord = (uint8_t)(le->ord & 0x1F); // strip LAST flag
+    bool last = (le->ord & 0x40) != 0;
+    if (ord == 0) return;
+
+    // Start of an LFN sequence has 0x40 bit set.
+    if (last) {
+        lfn_reset(lfn, lfn_len, have_lfn, lfn_chksum);
+        *have_lfn = true;
+        if (lfn_chksum) *lfn_chksum = le->chksum;
+    }
+
+    if (!*have_lfn) return;
+    if (lfn_chksum && *lfn_chksum != le->chksum) {
+        // checksum mismatch -> discard
+        lfn_reset(lfn, lfn_len, have_lfn, lfn_chksum);
+        return;
+    }
+
+    // Each LFN entry encodes up to 13 characters. Ordinals are 1-based.
+    int base = ((int)ord - 1) * 13;
+    int p = base;
+    for (int i = 0; i < 5; i++) lfn_write_code_unit_at(le->name1[i], lfn, p++);
+    for (int i = 0; i < 6; i++) lfn_write_code_unit_at(le->name2[i], lfn, p++);
+    for (int i = 0; i < 2; i++) lfn_write_code_unit_at(le->name3[i], lfn, p++);
+}
+
+static bool fat32_read_file_by_dirent(const fat32_fs_t* fs, const fat_dirent_t* de, uint8_t** out_buf, uint32_t* out_size) {
+    if (!fs || !de || !out_buf || !out_size) return false;
+    *out_buf = 0;
+    *out_size = 0;
+
+    uint32_t first_cluster = ((uint32_t)de->fst_clus_hi << 16) | (uint32_t)de->fst_clus_lo;
+    uint32_t size = de->file_size;
+    if (size == 0) {
+        *out_buf = 0;
+        *out_size = 0;
+        return true;
+    }
+
+    uint8_t* buf = (uint8_t*)kmalloc(size);
+    if (!buf) return false;
+
+    uint32_t bytes_read = 0;
+    uint32_t cur = first_cluster;
+    uint32_t bps = fs_bytes_per_sector(fs);
+    uint8_t data[ATA_SECTOR_SIZE];
+    while (cur >= 2 && cur < 0x0FFFFFF8UL && bytes_read < size) {
+        uint32_t dlba = cluster_to_lba(fs, cur);
+        for (uint32_t ss = 0; ss < fs->sectors_per_cluster && bytes_read < size; ss++) {
+            if (!ata_read512(dlba + ss, data)) { kfree(buf); return false; }
+
+            uint32_t to_copy = bps;
+            if (to_copy > (size - bytes_read)) to_copy = size - bytes_read;
+            memcpy(buf + bytes_read, data, to_copy);
+            bytes_read += to_copy;
+        }
+
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, cur, &next)) { kfree(buf); return false; }
+        cur = next;
+    }
+
+    if (bytes_read != size) {
+        kfree(buf);
+        return false;
+    }
+
+    *out_buf = buf;
+    *out_size = size;
+    return true;
 }
 
 bool fat32_mount(fat32_fs_t* fs, uint32_t part_lba_start) {
@@ -235,45 +384,7 @@ bool fat32_read_root_file(const fat32_fs_t* fs, const char* name, uint8_t** out_
                 }
                 if (!match) continue;
 
-                uint32_t first_cluster = ((uint32_t)de->fst_clus_hi << 16) | (uint32_t)de->fst_clus_lo;
-                uint32_t size = de->file_size;
-                if (size == 0) {
-                    *out_buf = 0;
-                    *out_size = 0;
-                    return true;
-                }
-
-                uint8_t* buf = (uint8_t*)kmalloc(size);
-                if (!buf) return false;
-
-                uint32_t bytes_read = 0;
-                uint32_t cur = first_cluster;
-        uint32_t bps = fs_bytes_per_sector(fs);
-        uint8_t data[ATA_SECTOR_SIZE];
-                while (cur >= 2 && cur < 0x0FFFFFF8UL && bytes_read < size) {
-                    uint32_t dlba = cluster_to_lba(fs, cur);
-                    for (uint32_t ss = 0; ss < fs->sectors_per_cluster && bytes_read < size; ss++) {
-            if (!ata_read512(dlba + ss, data)) { kfree(buf); return false; }
-
-            uint32_t to_copy = bps;
-                        if (to_copy > (size - bytes_read)) to_copy = size - bytes_read;
-                        memcpy(buf + bytes_read, data, to_copy);
-                        bytes_read += to_copy;
-                    }
-
-                    uint32_t next = 0;
-                    if (!fat32_read_fat_entry(fs, cur, &next)) { kfree(buf); return false; }
-                    cur = next;
-                }
-
-                if (bytes_read != size) {
-                    kfree(buf);
-                    return false;
-                }
-
-                *out_buf = buf;
-                *out_size = size;
-                return true;
+                return fat32_read_file_by_dirent(fs, de, out_buf, out_size);
             }
         }
 
@@ -283,6 +394,164 @@ bool fat32_read_root_file(const fat32_fs_t* fs, const char* name, uint8_t** out_
     }
 
     return false;
+}
+
+bool fat32_list_root_long(const fat32_fs_t* fs, fat32_list_lfn_cb_t cb, void* user) {
+    if (!fs || !fs->mounted || !cb) return false;
+
+    uint32_t dir_cluster = fs->root_cluster;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    char lfn[FAT32_LFN_MAX_CHARS];
+    int lfn_len = 0;
+    bool have_lfn = false;
+    uint8_t lfn_chksum = 0;
+    char sfn_name[13];
+
+    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+
+    while (dir_cluster >= 2 && dir_cluster < 0x0FFFFFF8UL) {
+        uint32_t lba0 = cluster_to_lba(fs, dir_cluster);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            if (!ata_read512(lba0 + s, sec)) return false;
+
+            for (uint32_t off = 0; off + 32 <= ATA_SECTOR_SIZE; off += 32) {
+                const uint8_t* ent = sec + off;
+                uint8_t first = ent[0];
+                uint8_t attr = ent[11];
+
+                if (first == 0x00) {
+                    return true;
+                }
+                if (first == 0xE5) {
+                    // deleted entry; reset any pending LFN
+                    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                if (attr == 0x0F) {
+                    lfn_consume_entry((const fat_lfn_t*)ent, lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                const fat_dirent_t* de = (const fat_dirent_t*)ent;
+                if (de->attr & 0x08) {
+                    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+                if (de->name[0] == '.') {
+                    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                bool is_dir = (de->attr & 0x10) != 0;
+
+                const char* out_name = 0;
+                bool used_lfn = false;
+                if (have_lfn) {
+                    lfn_finalize(lfn, &lfn_len);
+                    // Only trust LFN if it's non-empty; otherwise fall back to SFN.
+                    out_name = (lfn_len > 0) ? lfn : 0;
+                    used_lfn = (out_name != 0);
+                }
+
+                if (!out_name) {
+                    name_83_to_string(de->name, sfn_name);
+                    out_name = sfn_name;
+                }
+
+#if FAT32_DEBUG_LS
+                {
+                    // NOTE: kprintf is safe here; this runs only during an explicit ls.
+                    if (used_lfn) {
+                        kprintf("FAT32_LS: LFN  '%s'\n", out_name);
+                    } else {
+                        // Print both SFN and whether we had any pending LFN bytes.
+                        kprintf("FAT32_LS: SFN  '%s' (had_lfn=%d lfn_len=%d)\n", out_name, (int)(have_lfn ? 1 : 0), (int)lfn_len);
+                    }
+                }
+#endif
+
+                if (out_name && out_name[0]) {
+                    if (!cb(out_name, is_dir, user)) return true;
+                }
+
+                // reset after consuming main entry
+                lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+            }
+        }
+
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, dir_cluster, &next)) return false;
+        dir_cluster = next;
+    }
+
+    return true;
+}
+
+bool fat32_read_root_file_long(const fat32_fs_t* fs, const char* name, uint8_t** out_buf, uint32_t* out_size) {
+    if (!fs || !fs->mounted || !name || !out_buf || !out_size) return false;
+    *out_buf = 0;
+    *out_size = 0;
+
+    // First try LFN scan.
+    uint32_t dir_cluster = fs->root_cluster;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    char lfn[FAT32_LFN_MAX_CHARS];
+    int lfn_len = 0;
+    bool have_lfn = false;
+    uint8_t lfn_chksum = 0;
+
+    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+
+    while (dir_cluster >= 2 && dir_cluster < 0x0FFFFFF8UL) {
+        uint32_t lba0 = cluster_to_lba(fs, dir_cluster);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            if (!ata_read512(lba0 + s, sec)) return false;
+
+            for (uint32_t off = 0; off + 32 <= ATA_SECTOR_SIZE; off += 32) {
+                const uint8_t* ent = sec + off;
+                uint8_t first = ent[0];
+                uint8_t attr = ent[11];
+
+                if (first == 0x00) {
+                    // end; if we didn't find via LFN, try 8.3 fallback.
+                    goto fallback_sfn;
+                }
+                if (first == 0xE5) {
+                    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                if (attr == 0x0F) {
+                    lfn_consume_entry((const fat_lfn_t*)ent, lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                const fat_dirent_t* de = (const fat_dirent_t*)ent;
+                if (de->attr & 0x08) {
+                    lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+                    continue;
+                }
+
+                if (have_lfn) {
+                    lfn_finalize(lfn, &lfn_len);
+                    if (str_ieq_ascii(lfn, name)) {
+                        return fat32_read_file_by_dirent(fs, de, out_buf, out_size);
+                    }
+                }
+
+                lfn_reset(lfn, &lfn_len, &have_lfn, &lfn_chksum);
+            }
+        }
+
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, dir_cluster, &next)) return false;
+        dir_cluster = next;
+    }
+
+fallback_sfn:
+    // Fall back to old 8.3 behavior.
+    return fat32_read_root_file(fs, name, out_buf, out_size);
 }
 
 bool fat32_list_root(const fat32_fs_t* fs, fat32_list_cb_t cb, void* user) {

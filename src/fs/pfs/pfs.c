@@ -466,12 +466,19 @@ bool pfs_read_user_file(const char* path, uint8_t** out_buf, uint32_t* out_size)
         if (p[i] == '/') return false;
     }
 
-    // FAT layer expects an 8.3-ish name like SETTINGS.PSET.
-    return fat32_read_root_file(&g_user_fs, p, out_buf, out_size);
+    // Prefer long filenames (VFAT) so user-visible paths match what was written.
+    // Falls back to 8.3 matching if no LFN entries exist.
+    return fat32_read_root_file_long(&g_user_fs, p, out_buf, out_size);
 }
 
 bool pfs_list_user_root(pfs_list_cb_t cb, void* user) {
     if (!cb) return false;
     if (!g_pfs.user_mounted) return false;
     return fat32_list_root(&g_user_fs, (fat32_list_cb_t)cb, user);
+}
+
+bool pfs_list_user_root_long(pfs_list_lfn_cb_t cb, void* user) {
+    if (!cb) return false;
+    if (!g_pfs.user_mounted) return false;
+    return fat32_list_root_long(&g_user_fs, (fat32_list_lfn_cb_t)cb, user);
 }

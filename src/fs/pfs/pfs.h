@@ -44,4 +44,8 @@ bool pfs_read_user_file(const char* path, uint8_t** out_buf, uint32_t* out_size)
 typedef bool (*pfs_list_cb_t)(const char* name, bool is_dir, void* user);
 bool pfs_list_user_root(pfs_list_cb_t cb, void* user);
 
+// Long-name aware variant.
+typedef bool (*pfs_list_lfn_cb_t)(const char* name, bool is_dir, void* user);
+bool pfs_list_user_root_long(pfs_list_lfn_cb_t cb, void* user);
+
 #endif
