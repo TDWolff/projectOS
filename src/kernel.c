@@ -18,14 +18,27 @@
 #include "drivers/compositor.h"
 #include "drivers/dock.h"
 
+// Persistent storage scaffolding (Phase 0/1)
+#include "fs/pfs/pfs.h"
+
 void kernel_main(void* mb_info) {
     terminal_initialize();
     enable_fpu(); // Enable Floating Point Unit
     pmm_init(mb_info);
     heap_init();
     initrd_init(mb_info); // Initialize file system (ramdisk)
-    settings_init();      // Initialize settings (needs initrd)
+
+    // Initialize persistent storage (disk-backed) *before* settings.
+    // This allows /user/settings.pset to override initrd settings.pset.
+    pfs_init();
+
+    settings_init();      // Initialize settings (initrd fallback, /user preferred)
     video_init(mb_info);
+
+    // NOTE: Disabled: the smoketest writes to a fixed LBA and can corrupt the
+    // on-disk filesystem if it overlaps the FAT32 partition start.
+    // Re-enable only after moving it to a safe reserved region.
+    // (void)pfs_persist_smoketest();
     
     idt_init(); 
     timer_init(100);

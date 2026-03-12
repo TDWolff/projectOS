@@ -2,6 +2,7 @@
 #include "../lib/string.h"
 #include "../lib/stdio.h"
 #include "../fs/initrd.h"
+#include "../fs/pfs/pfs.h"
 #include "../mem/heap.h"
 #include "colors.h"
 
@@ -39,14 +40,40 @@ void settings_init() {
 }
 
 void settings_load_from_file(const char* filename) {
-    file_t* f = initrd_open(filename);
-    if (!f) {
-        kprintf("Settings: File '%s' not found.\n", filename);
-        return;
+    const char* source = "initrd";
+    const char* content = 0;
+    uint64_t size = 0;
+    uint8_t* user_buf = 0;
+    uint32_t user_size = 0;
+
+    // Prefer persistent /user/<filename> if available.
+    // NOTE: PFS path is currently FAT32 read-only and root-dir 8.3 only.
+    char user_path[96];
+    memset(user_path, 0, sizeof(user_path));
+    {
+        const char* prefix = "/user/";
+        int i = 0;
+        for (; prefix[i] && i < (int)sizeof(user_path) - 1; i++) user_path[i] = prefix[i];
+        int j = 0;
+        while (filename[j] && i < (int)sizeof(user_path) - 1) {
+            user_path[i++] = filename[j++];
+        }
+        user_path[i] = 0;
     }
 
-    char* content = (char*)f->address;
-    uint64_t size = f->size;
+    if (pfs_read_user_file(user_path, &user_buf, &user_size)) {
+        source = "/user";
+        content = (const char*)user_buf;
+        size = (uint64_t)user_size;
+    } else {
+        file_t* f = initrd_open(filename);
+        if (!f) {
+            kprintf("Settings: File '%s' not found (initrd).\n", filename);
+            return;
+        }
+        content = (const char*)f->address;
+        size = f->size;
+    }
     
     // We need to parse line by line.
     // Since we can't easily modify the initrd memory (it might be read-only logically, 
@@ -73,7 +100,11 @@ void settings_load_from_file(const char* filename) {
         parse_line(line_buffer);
     }
     
-    kprintf("Settings: Loaded %d entries from '%s'.\n", settings_count, filename);
+    kprintf("Settings: Loaded %d entries from '%s' (%s).\n", settings_count, filename, source);
+
+    if (user_buf) {
+        kfree(user_buf);
+    }
 }
 
 void settings_set(const char* key, const char* value) {

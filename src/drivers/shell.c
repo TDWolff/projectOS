@@ -7,6 +7,7 @@
 #include "../mem/heap.h"
 #include "../cpu/idt.h"
 #include "../fs/initrd.h"
+#include "../fs/pfs/pfs.h"
 #include "../mem/pmm.h"
 #include "../mem/vmm.h"
 #include "mouse.h"
@@ -19,6 +20,11 @@ static void* g_shell_putc_user = 0;
 void shell_set_output_sink(void (*putc_cb)(char c, void* user), void* user) {
     g_shell_putc = putc_cb;
     g_shell_putc_user = user;
+}
+
+void shell_get_output_sink(void (**out_putc_cb)(char c, void* user), void** out_user) {
+    if (out_putc_cb) *out_putc_cb = g_shell_putc;
+    if (out_user) *out_user = g_shell_putc_user;
 }
 
 static void shell_out_char(char c) {
@@ -52,6 +58,30 @@ static bool is_file_protected(const char* name) {
     return false;
 }
 
+// --- /user listing helpers ---
+
+static int g_ls_user_count = 0;
+
+static bool shell_pfs_ls_cb(const char* name, bool is_dir, void* user) {
+    (void)user;
+    if (!name || !name[0]) return true;
+    if (is_file_protected(name)) return true;
+
+    shell_out_str("  ");
+    shell_out_str(name);
+    if (is_dir) shell_out_str("/");
+    shell_out_str("\n");
+    g_ls_user_count++;
+    return true;
+}
+
+static bool shell_ls_user_root() {
+    g_ls_user_count = 0;
+    if (!pfs_list_user_root_long(shell_pfs_ls_cb, 0)) return false;
+    if (g_ls_user_count == 0) shell_out_str("  (empty)\n");
+    return true;
+}
+
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
@@ -77,8 +107,32 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    shell_out_str("ls, cat <file>, clear, ticks, divzero, echo <text>, run <program>\n");
+        shell_out_str("ls, cat <file>, pfs, clear, ticks, divzero, echo <text>, run <program>\n");
+        shell_out_str("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
+        shell_out_str("  - pfs: shows persistence (/user) mount status\n");
     } 
+    // PFS status
+    else if (strcmp(input, "pfs") == 0) {
+        const pfs_state_t* st = pfs_get_state();
+        shell_out_str("PFS: ");
+        if (!st || !st->has_disk) {
+            shell_out_str("no disk\n");
+        } else {
+            shell_out_str("disk OK, /user=");
+            shell_out_str(st->user_mounted ? "mounted\n" : "not mounted\n");
+        }
+
+        // Print verbose probe log into the terminal window's scrollback.
+        pfs_putc_fn putc_cb = 0;
+        void* user = 0;
+        shell_get_output_sink((void (**)(char, void*))&putc_cb, &user);
+        if (putc_cb) {
+            pfs_debug_probe_and_print_to(putc_cb, user);
+        } else {
+            // Fallback if no terminal window is attached.
+            pfs_debug_probe_and_print();
+        }
+    }
     // 1. RUN (Execute Program) - Quick hack parsing
     else if (input[0] == 'r' && input[1] == 'u' && input[2] == 'n' && input[3] == ' ') {
         char* filename = input + 4;
@@ -138,7 +192,23 @@ void execute_command(char* input) {
         }
     }
     // 2. LS (List Files)
-    else if (strcmp(input, "ls") == 0) {
+    else if (strcmp(input, "ls") == 0 ||
+             strcmp(input, "ls /user") == 0 ||
+             strcmp(input, "ls /user/") == 0) {
+        // If listing /user, use PFS/FAT32.
+        if (strcmp(input, "ls /user") == 0 || strcmp(input, "ls /user/") == 0) {
+            shell_out_str("/user:\n");
+            if (!pfs_get_state() || !pfs_get_state()->user_mounted) {
+                shell_out_str("  (not mounted)\n");
+                return;
+            }
+
+            if (!shell_ls_user_root()) {
+                shell_out_str("  (error reading directory)\n");
+            }
+            return;
+        }
+
         file_t* files = initrd_get_files();
         for(int i=0; i<MAX_FILES; i++) {
             if(files[i].exists && !is_file_protected(files[i].name)) {
@@ -156,19 +226,34 @@ void execute_command(char* input) {
             return;
         }
 
-        file_t* f = initrd_open(filename);
-        
-        if (f) {
-            shell_out_str("\n");
-            char* content = (char*)f->address;
-            for(uint64_t i=0; i < f->size; i++) {
-                shell_out_char(content[i]);
+        // If the user asks for /user/<file>, read using PFS.
+        if (filename[0] == '/' && filename[1] == 'u' && filename[2] == 's' && filename[3] == 'e' && filename[4] == 'r' && filename[5] == '/') {
+            uint8_t* buf = 0;
+            uint32_t sz = 0;
+            if (pfs_read_user_file(filename, &buf, &sz)) {
+                shell_out_str("\n");
+                for (uint32_t i = 0; i < sz; i++) shell_out_char((char)buf[i]);
+                kfree(buf);
+                shell_out_str("\n");
+            } else {
+                shell_out_str("File not found (or /user not mounted): ");
+                shell_out_str(filename);
+                shell_out_str("\n");
             }
         } else {
-            shell_out_str("File not found: ");
-            shell_out_str(filename);
+            file_t* f = initrd_open(filename);
+            if (f) {
+                shell_out_str("\n");
+                char* content = (char*)f->address;
+                for(uint64_t i=0; i < f->size; i++) {
+                    shell_out_char(content[i]);
+                }
+            } else {
+                shell_out_str("File not found: ");
+                shell_out_str(filename);
+            }
+            shell_out_str("\n"); // Newline after content for clean lines
         }
-        shell_out_str("\n"); // Newline after content for clean lines
     }
     else if (strcmp(input, "clear") == 0) {
     // Shell is logic-only: clear just emits a couple newlines for now.
