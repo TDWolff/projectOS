@@ -115,3 +115,13 @@ Example keys:
 ## License
 
 No license included, this project is open source. Feel free to use the code as you like, I'll continue to provide updates and improvements as I work on the OS. If you find any bugs or have suggestions, please open an issue or submit a pull request!
+
+---
+
+## Roadmap
+Planned features and improvements include:
+- Internet/networking support?
+- A more fully-featured userspace (file explorer, text editor, etc.)
+- More robust memory management and multitasking
+- Better graphics performance and hardware acceleration
+- Support for more hardware and peripherals
