@@ -124,8 +124,8 @@ disk-init:
 		exit 1; \
 	fi
 	@if [ -f osstorage/settings.pset ]; then \
-		MTOOLS_SKIP_CHECK=1 mcopy -i disk.img@@1048576 osstorage/settings.pset ::SETTINGS.PSET >/dev/null; \
-		echo "Seeded /user/SETTINGS.PSET from osstorage/settings.pset"; \
+		MTOOLS_SKIP_CHECK=1 mcopy -i disk.img@@1048576 osstorage/settings.pset ::settings.pset >/dev/null; \
+		echo "Seeded /user/settings.pset from osstorage/settings.pset"; \
 	else \
 		echo "Note: osstorage/settings.pset not found; skipping seed copy."; \
 	fi

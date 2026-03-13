@@ -4,6 +4,7 @@
 #include "../../lib/stdio.h"
 #include "../../lib/string.h"
 #include "../../mem/heap.h"
+#include "../../drivers/shell.h"
 
 // Enable verbose debugging for FAT32 directory enumeration.
 // When enabled, fat32_list_root_long() prints whether each entry is emitted via
@@ -11,6 +12,34 @@
 // Keep this off by default to avoid spam.
 #ifndef FAT32_DEBUG_LS
 #define FAT32_DEBUG_LS 0
+#endif
+
+#if FAT32_DEBUG_LS
+static void fat32_dbg_int10(int v, char out[32]) {
+    // itoa prints lower-case digits for bases > 10; base10 is fine here.
+    itoa((int64_t)v, out, 10);
+}
+
+static void fat32_dbg_ls_lfn(const char* name) {
+    shell_out_str("FAT32_ls: LFN  '");
+    shell_out_str(name ? name : "");
+    shell_out_str("'\n");
+}
+
+static void fat32_dbg_ls_sfn(const char* name, int had_lfn, int lfn_len) {
+    char b1[32];
+    char b2[32];
+    fat32_dbg_int10(had_lfn, b1);
+    fat32_dbg_int10(lfn_len, b2);
+
+    shell_out_str("FAT32_ls: SFN  '");
+    shell_out_str(name ? name : "");
+    shell_out_str("' (had_lfn=");
+    shell_out_str(b1);
+    shell_out_str(" lfn_len=");
+    shell_out_str(b2);
+    shell_out_str(")\n");
+}
 #endif
 
 static uint16_t rd16le(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
@@ -155,21 +184,6 @@ static void name_83_to_string(const uint8_t in11[11], char out[13]) {
     out[o] = 0;
 }
 
-static int to_lower_ascii(int c) {
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    return c;
-}
-
-static bool str_ieq_ascii(const char* a, const char* b) {
-    if (!a || !b) return false;
-    int i = 0;
-    while (a[i] && b[i]) {
-        if (to_lower_ascii(a[i]) != to_lower_ascii(b[i])) return false;
-        i++;
-    }
-    return a[i] == 0 && b[i] == 0;
-}
-
 static void lfn_reset(char* lfn, int* lfn_len, bool* have_lfn, uint8_t* lfn_chksum) {
     if (lfn && FAT32_LFN_MAX_CHARS > 0) {
         // Initialize buffer to NUL so partial writes always end up as a valid C string.
@@ -230,8 +244,14 @@ static void lfn_consume_entry(const fat_lfn_t* le, char* lfn, int* lfn_len, bool
         return;
     }
 
-    // Each LFN entry encodes up to 13 characters. Ordinals are 1-based.
-    int base = ((int)ord - 1) * 13;
+    // Each LFN entry encodes up to 13 characters.
+    // On disk, entries appear in *reverse* order: highest ordinal first, then ... down to 1.
+    // We want `lfn[0]` to start with ordinal 1, so map ord -> offset using total count.
+    // The total number of entries is stored in the LAST entry's ordinal (with 0x40 set).
+    static int s_lfn_total_entries = 0;
+    if (last) s_lfn_total_entries = (int)ord;
+    if (s_lfn_total_entries <= 0) s_lfn_total_entries = (int)ord;
+    int base = (s_lfn_total_entries - (int)ord) * 13;
     int p = base;
     for (int i = 0; i < 5; i++) lfn_write_code_unit_at(le->name1[i], lfn, p++);
     for (int i = 0; i < 6; i++) lfn_write_code_unit_at(le->name2[i], lfn, p++);
@@ -461,12 +481,10 @@ bool fat32_list_root_long(const fat32_fs_t* fs, fat32_list_lfn_cb_t cb, void* us
 
 #if FAT32_DEBUG_LS
                 {
-                    // NOTE: kprintf is safe here; this runs only during an explicit ls.
                     if (used_lfn) {
-                        kprintf("FAT32_LS: LFN  '%s'\n", out_name);
+                        fat32_dbg_ls_lfn(out_name);
                     } else {
-                        // Print both SFN and whether we had any pending LFN bytes.
-                        kprintf("FAT32_LS: SFN  '%s' (had_lfn=%d lfn_len=%d)\n", out_name, (int)(have_lfn ? 1 : 0), (int)lfn_len);
+                        fat32_dbg_ls_sfn(out_name, (int)(have_lfn ? 1 : 0), (int)lfn_len);
                     }
                 }
 #endif
@@ -535,7 +553,7 @@ bool fat32_read_root_file_long(const fat32_fs_t* fs, const char* name, uint8_t**
 
                 if (have_lfn) {
                     lfn_finalize(lfn, &lfn_len);
-                    if (str_ieq_ascii(lfn, name)) {
+                    if (strcmp(lfn, name) == 0) {
                         return fat32_read_file_by_dirent(fs, de, out_buf, out_size);
                     }
                 }

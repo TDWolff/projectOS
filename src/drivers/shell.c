@@ -31,29 +31,61 @@ static void shell_out_char(char c) {
     if (g_shell_putc) g_shell_putc(c, g_shell_putc_user);
 }
 
-static void shell_out_str(const char* s) {
+void sh_putc(char c) {
+    shell_out_char(c);
+}
+
+void sh_printf(const char* s) {
     if (!s) return;
     for (int i = 0; s[i]; i++) shell_out_char(s[i]);
+}
+
+void shell_out_str(const char* s) {
+    // Backwards-compatible wrapper.
+    sh_printf(s);
 }
 
 void shell_print_prompt() {
     const char* username = settings_get("username");
     if (!username || !username[0]) username = "root";
-    shell_out_str(username);
-    shell_out_str(" % ");
+    sh_printf(username);
+    sh_printf(" % ");
 }
 
 // List of files to exclude from user view/access
 static const char* protected_files[] = {
     "settings.pset",
     "kernel.bin", // Usually protected anyway, but good to list
-    "limine.conf",
+    "limine.conf", // Same thing as kernel.bin
+    "terminal.dock",
     0 // Null terminator
 };
 
+// Local ASCII-only case-insensitive compare.
+// (We don't have a libc `strcasecmp` in the kernel.)
+static int to_lower_ascii(int c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+static int stricmp_ascii(const char* a, const char* b) {
+    if (!a || !b) return 1;
+    int i = 0;
+    while (a[i] && b[i]) {
+        int ca = to_lower_ascii((unsigned char)a[i]);
+        int cb = to_lower_ascii((unsigned char)b[i]);
+        if (ca != cb) return ca - cb;
+        i++;
+    }
+    return to_lower_ascii((unsigned char)a[i]) - to_lower_ascii((unsigned char)b[i]);
+}
+
 static bool is_file_protected(const char* name) {
     for (int i = 0; protected_files[i]; i++) {
-        if (strcmp(name, protected_files[i]) == 0) return true;
+    // FAT32 may return either SFN (usually upper) or LFN (case-preserving)
+    // depending on how the file was created on disk; treat protected files
+    // as case-insensitive so they remain hidden.
+        if (stricmp_ascii(name, protected_files[i]) == 0) return true;
     }
     return false;
 }
@@ -67,10 +99,10 @@ static bool shell_pfs_ls_cb(const char* name, bool is_dir, void* user) {
     if (!name || !name[0]) return true;
     if (is_file_protected(name)) return true;
 
-    shell_out_str("  ");
-    shell_out_str(name);
-    if (is_dir) shell_out_str("/");
-    shell_out_str("\n");
+    sh_printf("  ");
+    sh_printf(name);
+    if (is_dir) sh_printf("/");
+    sh_printf("\n");
     g_ls_user_count++;
     return true;
 }
@@ -78,7 +110,7 @@ static bool shell_pfs_ls_cb(const char* name, bool is_dir, void* user) {
 static bool shell_ls_user_root() {
     g_ls_user_count = 0;
     if (!pfs_list_user_root_long(shell_pfs_ls_cb, 0)) return false;
-    if (g_ls_user_count == 0) shell_out_str("  (empty)\n");
+    if (g_ls_user_count == 0) sh_printf("  (empty)\n");
     return true;
 }
 
@@ -107,19 +139,19 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-        shell_out_str("ls, cat <file>, pfs, clear, ticks, divzero, echo <text>, run <program>\n");
-        shell_out_str("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
-        shell_out_str("  - pfs: shows persistence (/user) mount status\n");
+    sh_printf("ls, cat <file>, pfs, clear, ticks, divzero, echo <text>, run <program>\n");
+    sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
+    sh_printf("  - pfs: shows persistence (/user) mount status\n");
     } 
     // PFS status
     else if (strcmp(input, "pfs") == 0) {
         const pfs_state_t* st = pfs_get_state();
-        shell_out_str("PFS: ");
+        sh_printf("PFS: ");
         if (!st || !st->has_disk) {
-            shell_out_str("no disk\n");
+            sh_printf("no disk\n");
         } else {
-            shell_out_str("disk OK, /user=");
-            shell_out_str(st->user_mounted ? "mounted\n" : "not mounted\n");
+            sh_printf("disk OK, /user=");
+            sh_printf(st->user_mounted ? "mounted\n" : "not mounted\n");
         }
 
         // Print verbose probe log into the terminal window's scrollback.
@@ -138,16 +170,16 @@ void execute_command(char* input) {
         char* filename = input + 4;
 
         if (is_file_protected(filename)) {
-            shell_out_str("Error: Access Denied (Protected File)\n");
+            sh_printf("Error: Access Denied (Protected File)\n");
             return;
         }
 
         file_t* f = initrd_open(filename);
 
         if (f) {
-            shell_out_str("Loading program '");
-            shell_out_str(filename);
-            shell_out_str("'...\n");
+            sh_printf("Loading program '");
+            sh_printf(filename);
+            sh_printf("'...\n");
             
             // 1. Create a new address space for the app
             extern uint64_t p4_table[]; // Access kernel table
@@ -184,11 +216,11 @@ void execute_command(char* input) {
 
             // 5. UI redraw is handled elsewhere (compositor/window manager).
             // The shell is logic-only and shouldn't call rendering functions directly.
-            shell_out_str("Program finished.\n");
+            sh_printf("Program finished.\n");
         } else {
-            shell_out_str("Program not found: ");
-            shell_out_str(filename);
-            shell_out_str("\n");
+            sh_printf("Program not found: ");
+            sh_printf(filename);
+            sh_printf("\n");
         }
     }
     // 2. LS (List Files)
@@ -197,14 +229,14 @@ void execute_command(char* input) {
              strcmp(input, "ls /user/") == 0) {
         // If listing /user, use PFS/FAT32.
         if (strcmp(input, "ls /user") == 0 || strcmp(input, "ls /user/") == 0) {
-            shell_out_str("/user:\n");
+            sh_printf("/user:\n");
             if (!pfs_get_state() || !pfs_get_state()->user_mounted) {
-                shell_out_str("  (not mounted)\n");
+                sh_printf("  (not mounted)\n");
                 return;
             }
 
             if (!shell_ls_user_root()) {
-                shell_out_str("  (error reading directory)\n");
+                sh_printf("  (error reading directory)\n");
             }
             return;
         }
@@ -212,8 +244,8 @@ void execute_command(char* input) {
         file_t* files = initrd_get_files();
         for(int i=0; i<MAX_FILES; i++) {
             if(files[i].exists && !is_file_protected(files[i].name)) {
-        shell_out_str(files[i].name);
-        shell_out_str("\n");
+    sh_printf(files[i].name);
+    sh_printf("\n");
             }
         }
     }
@@ -222,7 +254,7 @@ void execute_command(char* input) {
         char* filename = input + 4; // Skip "cat "
 
         if (is_file_protected(filename)) {
-            shell_out_str("Error: Access Denied (Protected File)\n");
+            sh_printf("Error: Access Denied (Protected File)\n");
             return;
         }
 
@@ -231,34 +263,34 @@ void execute_command(char* input) {
             uint8_t* buf = 0;
             uint32_t sz = 0;
             if (pfs_read_user_file(filename, &buf, &sz)) {
-                shell_out_str("\n");
+                sh_printf("\n");
                 for (uint32_t i = 0; i < sz; i++) shell_out_char((char)buf[i]);
                 kfree(buf);
-                shell_out_str("\n");
+                sh_printf("\n");
             } else {
-                shell_out_str("File not found (or /user not mounted): ");
-                shell_out_str(filename);
-                shell_out_str("\n");
+                sh_printf("File not found (or /user not mounted): ");
+                sh_printf(filename);
+                sh_printf("\n");
             }
         } else {
             file_t* f = initrd_open(filename);
             if (f) {
-                shell_out_str("\n");
+                sh_printf("\n");
                 char* content = (char*)f->address;
                 for(uint64_t i=0; i < f->size; i++) {
                     shell_out_char(content[i]);
                 }
             } else {
-                shell_out_str("File not found: ");
-                shell_out_str(filename);
+                sh_printf("File not found: ");
+                sh_printf(filename);
             }
-            shell_out_str("\n"); // Newline after content for clean lines
+            sh_printf("\n"); // Newline after content for clean lines
         }
     }
     else if (strcmp(input, "clear") == 0) {
     // Shell is logic-only: clear just emits a couple newlines for now.
     // (A future terminal UI can implement a real clear-screen escape.)
-    shell_out_str("\n\n");
+    sh_printf("\n\n");
     shell_print_prompt();
         return;
     } 
@@ -286,7 +318,7 @@ void shell_update(char c) {
 
     if (c == '\n') {
         command_buffer[buffer_idx] = '\0';
-        shell_out_str("\n");
+    sh_printf("\n");
         execute_command(command_buffer);
         memset(command_buffer, 0, MAX_COMMAND_LEN);
         buffer_idx = 0;
