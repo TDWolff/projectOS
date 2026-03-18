@@ -13,6 +13,11 @@
 #include "mouse.h"
 #include "../lib/settings.h"
 
+// Networking test command
+#include "../net/selftest.h"
+// Interface listing
+#include "../net/net.h"
+
 // Shell output sink: lets the windowed terminal display shell I/O.
 static void (*g_shell_putc)(char c, void* user) = 0;
 static void* g_shell_putc_user = 0;
@@ -114,6 +119,45 @@ static bool shell_ls_user_root() {
     return true;
 }
 
+// --- tiny formatting helpers (shell output sink only) ----------------------
+
+static void sh_print_u64(uint64_t v) {
+    char buf[32];
+    uint32_t i = 0;
+    if (v == 0) {
+        sh_putc('0');
+        return;
+    }
+    while (v && i < (uint32_t)(sizeof(buf) - 1)) {
+        buf[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (i) sh_putc(buf[--i]);
+}
+
+static void sh_print_hex32(uint32_t v) {
+    const char* hex = "0123456789abcdef";
+    char buf[8];
+    for (int i = 0; i < 8; i++) {
+        buf[7 - i] = hex[v & 0xF];
+        v >>= 4;
+    }
+    for (int i = 0; i < 8; i++) sh_putc(buf[i]);
+}
+
+static void sh_print_hex8_2(uint8_t v) {
+    const char* hex = "0123456789abcdef";
+    sh_putc(hex[(v >> 4) & 0xF]);
+    sh_putc(hex[v & 0xF]);
+}
+
+static void sh_print_ip4(const uint8_t ip[4]) {
+    sh_print_u64(ip[0]); sh_putc('.');
+    sh_print_u64(ip[1]); sh_putc('.');
+    sh_print_u64(ip[2]); sh_putc('.');
+    sh_print_u64(ip[3]);
+}
+
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
@@ -139,9 +183,12 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    sh_printf("ls, cat <file>, pfs, clear, ticks, divzero, echo <text>, run <program>\n");
+    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, clear, ticks, divzero, echo <text>, run <program>\n");
     sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
     sh_printf("  - pfs: shows persistence (/user) mount status\n");
+    sh_printf("  - netif: lists network interfaces\n");
+    sh_printf("  - netdevice: shows which NIC is selected as primary\n");
+    sh_printf("  - nettest: runs networking loopback self-tests (ICMP + UDP echo)\n");
     } 
     // PFS status
     else if (strcmp(input, "pfs") == 0) {
@@ -163,6 +210,84 @@ void execute_command(char* input) {
         } else {
             // Fallback if no terminal window is attached.
             pfs_debug_probe_and_print();
+        }
+    }
+    else if (strcmp(input, "nettest") == 0) {
+        // Loopback-only network self-test suite.
+        // (This doesn't require a real NIC driver yet.)
+        net_selftest_run();
+    }
+    else if (strcmp(input, "netif") == 0) {
+        sh_printf("Interfaces:\n");
+
+        uint32_t n = net_get_nic_count();
+        if (n == 0) {
+            sh_printf("  (none)\n");
+            return;
+        }
+
+        for (uint32_t i = 0; i < n; i++) {
+            net_nic_interfaces_t* nic = net_get_nic(i);
+            if (!nic) continue;
+
+            sh_printf("  ");
+            sh_printf(nic->name);
+            sh_printf(" flags=0x");
+            sh_print_hex32((uint32_t)nic->flags);
+
+            sh_printf(" ip=");
+            sh_print_ip4(nic->ip_address);
+
+            sh_printf(" mac=");
+            uint8_t* mac = nic->get_mac_addr ? nic->get_mac_addr() : 0;
+            if (mac) {
+                sh_print_hex8_2(mac[0]); sh_putc(':');
+                sh_print_hex8_2(mac[1]); sh_putc(':');
+                sh_print_hex8_2(mac[2]); sh_putc(':');
+                sh_print_hex8_2(mac[3]); sh_putc(':');
+                sh_print_hex8_2(mac[4]); sh_putc(':');
+                sh_print_hex8_2(mac[5]);
+            } else {
+                sh_printf("(none)");
+            }
+
+            sh_printf(" rx=");
+            sh_print_u64(nic->rx_packets);
+            sh_printf(" tx=");
+            sh_print_u64(nic->tx_packets);
+            sh_printf("\n");
+        }
+    }
+    else if (strcmp(input, "netdevice") == 0) {
+        net_nic_interfaces_t* primary = net_get_primary_nic();
+
+        sh_printf("Primary NIC: ");
+        if (primary) {
+            sh_printf(primary->name);
+        } else {
+            sh_printf("(none)");
+        }
+        sh_printf("\n");
+
+        // Also list what we found, and mark the selected one.
+        uint32_t n = net_get_nic_count();
+        sh_printf("Discovered NICs:\n");
+        if (n == 0) {
+            sh_printf("  (none)\n");
+            return;
+        }
+
+        for (uint32_t i = 0; i < n; i++) {
+            net_nic_interfaces_t* nic = net_get_nic(i);
+            if (!nic) continue;
+
+            sh_printf("  ");
+            if (nic == primary) sh_printf("* ");
+            else sh_printf("  ");
+            sh_printf(nic->name);
+            sh_printf(" flags=0x");
+            sh_print_hex32((uint32_t)nic->flags);
+            sh_printf("\n");
         }
     }
     // 1. RUN (Execute Program) - Quick hack parsing

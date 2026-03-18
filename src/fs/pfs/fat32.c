@@ -310,11 +310,11 @@ bool fat32_mount(fat32_fs_t* fs, uint32_t part_lba_start) {
 
     uint8_t vbr[ATA_SECTOR_SIZE];
     if (!ata_read512(part_lba_start, vbr)) {
-        kprintf("FAT32: failed to read VBR.\n");
+        // kprintf("FAT32: failed to read VBR.\n");
         return false;
     }
     if (vbr[510] != 0x55 || vbr[511] != 0xAA) {
-        kprintf("FAT32: bad VBR signature.\n");
+        // kprintf("FAT32: bad VBR signature.\n");
         return false;
     }
 
@@ -329,29 +329,29 @@ bool fat32_mount(fat32_fs_t* fs, uint32_t part_lba_start) {
     uint32_t root_cluster = rd32le(vbr + 44);
 
     if (bytes_per_sector != 512) {
-        kprintf("FAT32: unsupported bytes/sector %u.\n", (unsigned)bytes_per_sector);
+        // kprintf("FAT32: unsupported bytes/sector %u.\n", (unsigned)bytes_per_sector);
         return false;
     }
     if (sectors_per_cluster == 0) {
-        kprintf("FAT32: invalid sectors/cluster 0.\n");
+        // kprintf("FAT32: invalid sectors/cluster 0.\n");
         return false;
     }
     if (reserved_sector_count == 0) {
-        kprintf("FAT32: invalid reserved sectors 0.\n");
+        // kprintf("FAT32: invalid reserved sectors 0.\n");
         return false;
     }
     if (num_fats == 0) {
-        kprintf("FAT32: invalid num_fats 0.\n");
+        // kprintf("FAT32: invalid num_fats 0.\n");
         return false;
     }
     // FAT32 should have fat_size_16 = 0 and fat_size_32 != 0.
     if (fat_size_16 != 0 || fat_size_32 == 0) {
-        kprintf("FAT32: not FAT32 (fat16sz=%u fat32sz=%u).\n",
-            (unsigned)fat_size_16, (unsigned)fat_size_32);
+        // kprintf("FAT32: not FAT32 (fat16sz=%u fat32sz=%u).\n",
+        //     (unsigned)fat_size_16, (unsigned)fat_size_32);
         return false;
     }
     if (root_cluster < 2) {
-        kprintf("FAT32: invalid root cluster %u.\n", (unsigned)root_cluster);
+        // kprintf("FAT32: invalid root cluster %u.\n", (unsigned)root_cluster);
         return false;
     }
 
@@ -367,7 +367,7 @@ bool fat32_mount(fat32_fs_t* fs, uint32_t part_lba_start) {
     fs->fat_lba = fs->part_lba_start + fs->reserved_sector_count;
     fs->data_lba = fs->fat_lba + fs->num_fats * fs->fat_size_sectors;
 
-    kprintf("FAT32: mounted (part LBA %d, root cluster %d).\n", (int)fs->part_lba_start, (int)fs->root_cluster);
+    // kprintf("FAT32: mounted (part LBA %d, root cluster %d).\n", (int)fs->part_lba_start, (int)fs->root_cluster);
     return true;
 }
 

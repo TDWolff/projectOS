@@ -82,6 +82,8 @@ run: app iso
 	fi
 	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa \
 		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-boot order=d,menu=on
 
 # Same as run, but with serial logs and no automatic reboot.
@@ -96,6 +98,8 @@ run-debug: app iso
 		-vga std \
 		-display cocoa \
 		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-boot order=d,menu=on \
 		-serial vc \
 		-no-reboot

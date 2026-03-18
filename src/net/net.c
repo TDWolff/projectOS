@@ -1,0 +1,106 @@
+#include "net.h"
+
+// include shell.h
+#include "../drivers/shell.h"
+
+#include "../lib/string.h"
+#include "../mem/heap.h"
+#include "../cpu/idt.h"
+#include "../fs/initrd.h"
+#include "../fs/pfs/pfs.h"
+
+#include "../lib/settings.h"
+
+#include "arp.h"
+#include "ip.h"
+
+#include "discovery.h"
+
+// NIC drivers
+#include "../drivers/net/e1000.h"
+
+#include "../lib/stdio.h"
+
+// --- NIC registry ----------------------------------------------------------
+
+#define NET_MAX_NICS 8
+static net_nic_interfaces_t* g_net_nics[NET_MAX_NICS];
+static uint32_t g_net_nic_count = 0;
+
+bool net_register_nic(net_nic_interfaces_t* nic) {
+    if (!nic) return false;
+
+    // Don't register duplicates.
+    for (uint32_t i = 0; i < g_net_nic_count; i++) {
+        if (g_net_nics[i] == nic) return true;
+    }
+
+    if (g_net_nic_count >= NET_MAX_NICS) return false;
+    g_net_nics[g_net_nic_count++] = nic;
+    return true;
+}
+
+uint32_t net_get_nic_count(void) {
+    return g_net_nic_count;
+}
+
+net_nic_interfaces_t* net_get_nic(uint32_t idx) {
+    if (idx >= g_net_nic_count) return 0;
+    return g_net_nics[idx];
+}
+
+void net_handle_packet_deferred(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic) {
+    // ProjectOS doesn't have Polaris's full scheduler/thread API exposed here yet.
+    // Keep the same conceptual hook point, but call directly for now.
+    net_handle_packet(packet, packet_length, nic);
+}
+
+void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic) {
+    if (!packet || !nic) return;
+    if (packet_length < sizeof(network_packet_t)) return;
+
+    // Best-effort stats.
+    nic->rx_packets++;
+    nic->rx_bytes += packet_length;
+
+    network_packet_t* net_pack = (network_packet_t*)packet;
+
+    void* data = (uint8_t*)packet + sizeof(network_packet_t);
+    uint32_t data_length = (uint32_t)packet_length - (uint32_t)sizeof(network_packet_t);
+
+    uint16_t type = BSWAP16(net_pack->type);
+    if (type == REQ_TYPE_ARP) {
+        arp_handle((arp_packet_t*)data, data_length, nic);
+    } else if (type == REQ_TYPE_IP) {
+        ip_handle((ip_packet_t*)data, data_length, net_pack->source_mac, nic);
+    } else {
+        // kprintf("NET: Unknown ethertype 0x%x\n", type);
+    }
+}
+
+void net_init(void) {
+    // Registry init
+    memset(g_net_nics, 0, sizeof(g_net_nics));
+    g_net_nic_count = 0;
+
+    // Protocol layers
+    arp_init();
+    // print to sys terminal saying ok
+    kprintf("NET: init ok (loopback up)\\n");
+
+    // Devices
+    // Loopback registers itself and is always present.
+    // (Kept separate to mirror Polaris's layout.)
+    extern void loopback_init(void);
+    loopback_init();
+
+    // Register loopback
+    extern net_nic_interfaces_t nic_loopback;
+    (void)net_register_nic(&nic_loopback);
+
+    // Probe hardware NIC(s)
+    (void)e1000_init();
+
+    // Select primary NIC (currently loopback-only, until a real NIC driver registers).
+    net_discovery_run();
+}

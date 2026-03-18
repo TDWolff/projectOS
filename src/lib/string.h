@@ -11,4 +11,7 @@ void reverse(char* s);
 
 int strcmp(const char* s1, const char* s2);
 
+// Compare two buffers. Returns 0 if equal, <0 if a<b, >0 if a>b.
+int memcmp(const void* a, const void* b, size_t n);
+
 #endif

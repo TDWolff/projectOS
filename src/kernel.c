@@ -18,6 +18,9 @@
 #include "drivers/compositor.h"
 #include "drivers/dock.h"
 
+// Networking (Polaris-inspired)
+#include "net/net.h"
+
 // Persistent storage scaffolding (Phase 0/1)
 #include "fs/pfs/pfs.h"
 
@@ -44,6 +47,10 @@ void kernel_main(void* mb_info) {
     timer_init(100);
     keyboard_init();
     mouse_init();
+
+    // Networking core + loopback device.
+    // Real NIC drivers can register a net_nic_interfaces_t and call net_handle_packet().
+    net_init();
     
     // Initialize System UI (Top Bar, Dock)
     systemui_init();
