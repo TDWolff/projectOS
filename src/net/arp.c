@@ -46,6 +46,14 @@ static void arp_put_entry(uint8_t ip[4], uint8_t mac[6]) {
     memcpy(e->mac, mac, 6);
 }
 
+bool arp_resolve(uint8_t ip[4], uint8_t out_mac[6]) {
+    if (!ip || !out_mac) return false;
+    arp_entry_t* e = arp_find_entry(ip);
+    if (!e) return false;
+    memcpy(out_mac, e->mac, 6);
+    return true;
+}
+
 void arp_init(void) {
     memset(g_arp_table, 0, sizeof(g_arp_table));
 }

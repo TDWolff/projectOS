@@ -80,6 +80,11 @@ void net_init(void);
 // Core receive entrypoint: hardware drivers should call this with an Ethernet frame.
 void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic);
 
+// Bring-up debug helpers
+uint64_t net_dbg_get_rx_frames(void);
+uint16_t net_dbg_get_last_ethertype(void);
+void net_dbg_reset(void);
+
 // Optional helper: deliver a packet in a task context. If you don't have a thread
 // system like Polaris, you can just call net_handle_packet directly.
 void net_handle_packet_deferred(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic);

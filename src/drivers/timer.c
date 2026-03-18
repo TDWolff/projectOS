@@ -2,10 +2,14 @@
 #include "../include/ports.h"
 #include "../lib/stdio.h"
 
+// Network polling (e1000 RX)
+#include "net/e1000.h"
+
 uint64_t system_ticks = 0;
 
 void timer_handler() {
     system_ticks++;
+    e1000_poll();
 }
 
 void timer_init(uint32_t freq) {

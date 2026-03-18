@@ -11,4 +11,7 @@
 
 bool e1000_init(void);
 
+// Poll RX/TX completion (call periodically from the timer tick).
+void e1000_poll(void);
+
 #endif

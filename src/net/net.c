@@ -27,6 +27,17 @@
 static net_nic_interfaces_t* g_net_nics[NET_MAX_NICS];
 static uint32_t g_net_nic_count = 0;
 
+// --- Debug (bring-up) ------------------------------------------------------
+static volatile uint64_t g_net_dbg_rx_frames = 0;
+static volatile uint16_t g_net_dbg_last_ethertype = 0;
+
+uint64_t net_dbg_get_rx_frames(void) { return g_net_dbg_rx_frames; }
+uint16_t net_dbg_get_last_ethertype(void) { return g_net_dbg_last_ethertype; }
+void net_dbg_reset(void) {
+    g_net_dbg_rx_frames = 0;
+    g_net_dbg_last_ethertype = 0;
+}
+
 bool net_register_nic(net_nic_interfaces_t* nic) {
     if (!nic) return false;
 
@@ -59,9 +70,7 @@ void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_
     if (!packet || !nic) return;
     if (packet_length < sizeof(network_packet_t)) return;
 
-    // Best-effort stats.
-    nic->rx_packets++;
-    nic->rx_bytes += packet_length;
+    g_net_dbg_rx_frames++;
 
     network_packet_t* net_pack = (network_packet_t*)packet;
 
@@ -69,6 +78,7 @@ void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_
     uint32_t data_length = (uint32_t)packet_length - (uint32_t)sizeof(network_packet_t);
 
     uint16_t type = BSWAP16(net_pack->type);
+    g_net_dbg_last_ethertype = type;
     if (type == REQ_TYPE_ARP) {
         arp_handle((arp_packet_t*)data, data_length, nic);
     } else if (type == REQ_TYPE_IP) {

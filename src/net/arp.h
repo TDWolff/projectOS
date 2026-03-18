@@ -18,6 +18,9 @@ typedef struct __attribute__((packed)) {
 void arp_init(void);
 void arp_handle(arp_packet_t* packet, uint32_t length, net_nic_interfaces_t* nic);
 
+// Query the ARP table for an IP. Returns true on hit.
+bool arp_resolve(uint8_t ip[4], uint8_t out_mac[6]);
+
 // Broadcast an ARP request for `ip`.
 void arp_lookup(uint8_t ip[4], net_nic_interfaces_t* nic);
 
