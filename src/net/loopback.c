@@ -6,7 +6,7 @@
 #include "../mem/heap.h"
 
 // Forward declare net core
-void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic);
+void net_handle_packet(void* packet, uint32_t packet_length, net_nic_interfaces_t* nic);
 
 static uint8_t g_lo_mac[6] = {0, 0, 0, 0, 0, 0};
 
@@ -16,7 +16,7 @@ net_nic_interfaces_t nic_loopback = {
     .type = INTERFACE_ETH | INTERFACE_LOOPBACK,
     .mtu = 65536,
     .ip_address = {127, 0, 0, 1},
-    .subnet = {255, 0, 0, 1},
+    .subnet = {255, 0, 0, 0},
     .gateway = {0, 0, 0, 0},
     .get_mac_addr = 0,
     .send_packet = 0,
@@ -43,7 +43,7 @@ static void loopback_send_packet(uint8_t* dest, void* payload, uint32_t payload_
     frame->type = BSWAP16(ethertype);
     memcpy(frame->data, payload, payload_len);
 
-    net_handle_packet(frame, (uint16_t)frame_len, &nic_loopback);
+    net_handle_packet(frame, frame_len, &nic_loopback);
 
     kfree(frame);
 }

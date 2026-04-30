@@ -17,6 +17,11 @@
 #include "../net/selftest.h"
 // Interface listing
 #include "../net/net.h"
+#include "../net/arp.h"
+#include "../net/ip.h"
+#include "../net/icmp.h"
+#include "../drivers/net/e1000.h"
+#include "timer.h"
 
 // Shell output sink: lets the windowed terminal display shell I/O.
 static void (*g_shell_putc)(char c, void* user) = 0;
@@ -158,6 +163,136 @@ static void sh_print_ip4(const uint8_t ip[4]) {
     sh_print_u64(ip[3]);
 }
 
+// Parse "a.b.c.d" into out[4]. Returns true on success.
+static bool parse_ip4(const char* s, uint8_t out[4]) {
+    uint8_t parts[4] = {0};
+    int part = 0;
+    uint32_t val = 0;
+    bool got_digit = false;
+
+    for (int i = 0; ; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') {
+            val = val * 10 + (uint32_t)(c - '0');
+            if (val > 255) return false;
+            got_digit = true;
+        } else if (c == '.' || c == '\0') {
+            if (!got_digit || part > 3) return false;
+            parts[part++] = (uint8_t)val;
+            val = 0;
+            got_digit = false;
+            if (c == '\0') break;
+        } else {
+            return false;
+        }
+    }
+
+    if (part != 4) return false;
+    for (int i = 0; i < 4; i++) out[i] = parts[i];
+    return true;
+}
+
+// Send one ICMP echo to target_ip via nic and wait up to timeout_ticks for reply.
+// Re-enables interrupts during the wait so get_ticks() advances normally.
+static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
+    // Decide next-hop: same subnet → ARP target directly, else ARP gateway.
+    bool on_subnet = true;
+    for (int i = 0; i < 4; i++) {
+        if ((target_ip[i] & nic->subnet[i]) != (nic->ip_address[i] & nic->subnet[i])) {
+            on_subnet = false;
+            break;
+        }
+    }
+    uint8_t* nexthop_ip = on_subnet ? target_ip : nic->gateway;
+
+    // Resolve next-hop MAC via ARP.
+    // Re-enable interrupts so the timer ticks while we wait.
+    uint8_t dest_mac[6] = {0};
+    if (!arp_resolve(nexthop_ip, dest_mac)) {
+        arp_lookup(nexthop_ip, nic);
+        __asm__ volatile("sti");
+        uint64_t deadline = get_ticks() + 200; // 2 seconds at 100 Hz
+        while (get_ticks() < deadline) {
+            e1000_poll();
+            if (arp_resolve(nexthop_ip, dest_mac)) break;
+            __asm__ volatile("pause");
+        }
+        __asm__ volatile("cli");
+    }
+
+    if (!arp_resolve(nexthop_ip, dest_mac)) {
+        sh_printf("ping: ARP failed - no route to host\n");
+        return;
+    }
+
+    // Build ICMP echo request.
+    const uint16_t ident_be    = BSWAP16(0x1CE0);
+    const uint16_t seq_be      = BSWAP16(1);
+    const uint32_t payload_len = (uint32_t)sizeof(icmp_echo_hdr_t) + 8;
+    const uint32_t ip_len      = (uint32_t)sizeof(ip_packet_t)
+                                 + (uint32_t)sizeof(icmp_header_t)
+                                 + payload_len;
+
+    ip_packet_t* ip = (ip_packet_t*)kmalloc(ip_len);
+    if (!ip) { sh_printf("ping: out of memory\n"); return; }
+    memset(ip, 0, ip_len);
+
+    ip->protocol               = 1; // ICMP
+    ip->internet_header_length = 5;
+    memcpy(ip->destination_protocol_addr, target_ip, 4);
+
+    icmp_header_t*   icmp = (icmp_header_t*)ip->data;
+    icmp->type     = 8; // echo request
+    icmp->code     = 0;
+    icmp->checksum = 0;
+
+    icmp_echo_hdr_t* echo = (icmp_echo_hdr_t*)icmp->data;
+    echo->identifier = ident_be;
+    echo->sequence   = seq_be;
+
+    uint8_t* p = (uint8_t*)icmp->data + sizeof(icmp_echo_hdr_t);
+    for (uint32_t i = 0; i < 8; i++) p[i] = (uint8_t)(0xA0u + i);
+
+    icmp->checksum = ip_calculate_checksum(
+        icmp, (int)(sizeof(icmp_header_t) + payload_len));
+
+    icmp_selftest_reset();
+    uint64_t tx_before = nic->tx_packets;
+    ip_send(ip, (uint16_t)ip_len, target_ip, dest_mac, nic);
+    kfree(ip);
+
+    if (nic->tx_packets == tx_before) {
+        sh_printf("ping: TX ring full - packet not sent\n");
+        return;
+    }
+
+    // Wait up to 4 seconds for an ICMP echo reply.
+    // Re-enable interrupts so the timer ISR can advance get_ticks().
+    bool got_reply = false;
+    __asm__ volatile("sti");
+    uint64_t deadline = get_ticks() + 400; // 4 seconds at 100 Hz
+    while (get_ticks() < deadline) {
+        e1000_poll();
+        if (icmp_selftest_wait_for_echo_reply(ident_be, seq_be, 1)) {
+            got_reply = true;
+            break;
+        }
+        __asm__ volatile("pause");
+    }
+    __asm__ volatile("cli");
+
+    if (got_reply) {
+        sh_printf("ping: reply from ");
+        sh_print_ip4(target_ip);
+        sh_printf(" ok\n");
+    } else {
+        sh_printf("ping: request timed out\n");
+        sh_printf("  (if pinging internet IPs, try: ping ");
+        sh_print_ip4(nic->gateway);
+        sh_printf(" first)\n");
+    }
+}
+
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
@@ -183,12 +318,30 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, clear, ticks, divzero, echo <text>, run <program>\n");
+    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip>, clear, ticks, divzero, echo <text>, run <program>\n");
     sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
     sh_printf("  - pfs: shows persistence (/user) mount status\n");
     sh_printf("  - netif: lists network interfaces\n");
     sh_printf("  - netdevice: shows which NIC is selected as primary\n");
-    sh_printf("  - nettest: runs networking loopback self-tests (ICMP + UDP echo)\n");
+    sh_printf("  - nettest: runs networking self-tests (ICMP + UDP echo)\n");
+    sh_printf("  - ping <ip>: send ICMP echo to an IP address\n");
+    }
+    else if (input[0]=='p' && input[1]=='i' && input[2]=='n' && input[3]=='g' && input[4]==' ') {
+        const char* ip_str = input + 5;
+        uint8_t target[4];
+        if (!parse_ip4(ip_str, target)) {
+            sh_printf("ping: invalid IP address\n");
+        } else {
+            net_nic_interfaces_t* nic = net_get_primary_nic();
+            if (!nic || (nic->flags & IFF_LOOPBACK)) {
+                sh_printf("ping: no real NIC available\n");
+            } else {
+                sh_printf("ping ");
+                sh_print_ip4(target);
+                sh_printf("...\n");
+                shell_ping_once(target, nic);
+            }
+        }
     } 
     // PFS status
     else if (strcmp(input, "pfs") == 0) {

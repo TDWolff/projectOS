@@ -30,7 +30,9 @@ void ip_send(ip_packet_t* packet, uint16_t length, uint8_t destination_protocol_
     packet->version = 4;
     packet->internet_header_length = 5;
     packet->length = BSWAP16(length);
-    packet->id = BSWAP16(packet->id);
+    static uint16_t s_ip_id = 0;
+    s_ip_id++;
+    packet->id = BSWAP16(s_ip_id);
     packet->fragment_offset = BSWAP16(0x4000);
     packet->time_to_live = 64;
 

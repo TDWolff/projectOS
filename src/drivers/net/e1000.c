@@ -4,7 +4,7 @@
 #include "../../lib/string.h"
 #include "../../lib/stdio.h"
 #include "../../mem/vmm.h"
-#include "../../mem/pmm.h"
+#include "../../mem/dma.h"
 
 #include "../../net/net.h"
 
@@ -123,6 +123,8 @@ static uint8_t* g_rx_buf[E1000_RX_RING_SIZE];
 static uint32_t g_tx_tail = 0;
 static uint32_t g_rx_tail = 0;
 
+static volatile uint64_t g_e1000_tx_drops = 0;
+
 static inline void mmio_write32(uint32_t reg, uint32_t v) {
     g_e1000_mmio[reg / 4] = v;
 }
@@ -168,6 +170,7 @@ static void e1000_send_packet(uint8_t* dest_mac, void* payload, uint32_t payload
 
     // If the descriptor isn't done, ring is full.
     if ((d->status & E1000_TX_STATUS_DD) == 0) {
+    g_e1000_tx_drops++;
         return;
     }
 
@@ -204,22 +207,23 @@ static void e1000_reset_hw(void) {
     mmio_write32(E1000_REG_CTRL, ctrl | E1000_CTRL_RST);
     e1000_flush();
 
-    // Small delay: not cycle-accurate, but good enough here.
+    // Poll until the hardware self-clears RST (spec requirement).
     for (volatile uint32_t i = 0; i < 1000000; i++) {
+        if (!(mmio_read32(E1000_REG_CTRL) & E1000_CTRL_RST)) break;
         __asm__ volatile("pause");
     }
 }
 
 static bool e1000_init_tx(void) {
     // Use a PMM page for DMA safety/alignment.
-    void* page = pmm_alloc();
+    void* page = dma_alloc_page();
     if (!page) return false;
     g_tx_desc = (e1000_tx_desc_t*)page;
     memset(g_tx_desc, 0, PAGE_SIZE);
 
     for (uint32_t i = 0; i < E1000_TX_RING_SIZE; i++) {
     // Back each TX slot with a physical page so the NIC can DMA it.
-    g_tx_buf[i] = (uint8_t*)pmm_alloc();
+    g_tx_buf[i] = (uint8_t*)dma_alloc_page();
     if (!g_tx_buf[i]) return false;
         memset(g_tx_buf[i], 0, 2048);
         g_tx_desc[i].addr = (uint64_t)g_tx_buf[i];
@@ -247,14 +251,14 @@ static bool e1000_init_tx(void) {
 
 static bool e1000_init_rx(void) {
     // Use a PMM page for DMA safety/alignment.
-    void* page = pmm_alloc();
+    void* page = dma_alloc_page();
     if (!page) return false;
     g_rx_desc = (e1000_rx_desc_t*)page;
     memset(g_rx_desc, 0, PAGE_SIZE);
 
     for (uint32_t i = 0; i < E1000_RX_RING_SIZE; i++) {
     // Back each RX slot with a physical page so the NIC can DMA into it.
-    g_rx_buf[i] = (uint8_t*)pmm_alloc();
+    g_rx_buf[i] = (uint8_t*)dma_alloc_page();
     if (!g_rx_buf[i]) return false;
         memset(g_rx_buf[i], 0, 2048);
         g_rx_desc[i].addr = (uint64_t)g_rx_buf[i];
@@ -268,13 +272,29 @@ static bool e1000_init_rx(void) {
     mmio_write32(E1000_REG_RDH, 0);
     mmio_write32(E1000_REG_RDT, E1000_RX_RING_SIZE - 1);
 
-    // RCTL: enable, accept broadcast, accept unicast/multicast promiscuously for bring-up, strip CRC.
-    uint32_t rctl = E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_UPE | E1000_RCTL_MPE |
+    // RCTL: enable, accept broadcast, strip CRC.
+    // With RAR0 programmed to our MAC, we shouldn't need promiscuous mode.
+    uint32_t rctl = E1000_RCTL_EN | E1000_RCTL_BAM |
                     E1000_RCTL_SECRC | E1000_RCTL_BSIZE_2048;
     mmio_write32(E1000_REG_RCTL, rctl);
 
     g_rx_tail = E1000_RX_RING_SIZE - 1;
     return true;
+}
+
+static void e1000_program_rar0(void) {
+    // Program Receive Address Register 0 with our MAC and set VALID bit.
+    // RAL: low 32 bits of MAC, RAH: high 16 bits plus AV bit (bit 31).
+    uint32_t ral = (uint32_t)g_e1000_mac[0] |
+                   ((uint32_t)g_e1000_mac[1] << 8) |
+                   ((uint32_t)g_e1000_mac[2] << 16) |
+                   ((uint32_t)g_e1000_mac[3] << 24);
+    uint32_t rah = (uint32_t)g_e1000_mac[4] |
+                   ((uint32_t)g_e1000_mac[5] << 8) |
+                   (1u << 31);
+    mmio_write32(E1000_REG_RAL, ral);
+    mmio_write32(E1000_REG_RAH, rah);
+    e1000_flush();
 }
 
 void e1000_poll(void) {
@@ -338,7 +358,13 @@ static bool e1000_try_init_from_pci(const pci_device_t* dev) {
         return false;
     }
 
-    uint64_t mmio_phys = (uint64_t)(bar0 & 0xFFFFFFF0u);
+    uint64_t mmio_phys;
+    if ((bar0 & 0x6) == 0x4) {
+        // 64-bit BAR: upper 32 bits live in BAR1.
+        mmio_phys = (uint64_t)(bar0 & 0xFFFFFFF0u) | ((uint64_t)dev->bar[1] << 32);
+    } else {
+        mmio_phys = (uint64_t)(bar0 & 0xFFFFFFF0u);
+    }
     if (!mmio_phys) return false;
 
     // Identity mapping policy note:
@@ -351,11 +377,14 @@ static bool e1000_try_init_from_pci(const pci_device_t* dev) {
     // Basic liveness check
     (void)mmio_read32(E1000_REG_STATUS);
 
-    // Reset and init rings.
+    // Read MAC from RAL/RAH before reset, because reset clears those registers.
+    if (!e1000_read_mac_from_mmio()) return false;
+
+    // Reset hardware (polls until RST bit self-clears).
     e1000_reset_hw();
 
-    // Read MAC
-    if (!e1000_read_mac_from_mmio()) return false;
+    // Reprogram RAR0 with our MAC after reset cleared it.
+    e1000_program_rar0();
 
     // Now that the function exists, wire the callback.
     g_e1000_nic.send_packet = e1000_send_packet;

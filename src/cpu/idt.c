@@ -24,9 +24,12 @@ const char *exception_messages[] = {
     "Reserved", "Reserved", "Reserved", "Reserved", "Reserved", "Reserved"
 };
 
-extern void isr0(); extern void isr8(); extern void isr13();
-extern void isr14(); extern void isr32(); extern void isr33(); extern void isr44(); 
-extern void isr128(); // Changed from isr0x80
+extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
+extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();
+extern void isr8();  extern void isr9();  extern void isr10(); extern void isr11();
+extern void isr12(); extern void isr13(); extern void isr14(); extern void isr15();
+extern void isr32(); extern void isr33(); extern void isr44();
+extern void isr128();
 extern void load_idt(idtr_t*);
 void syscall_handler(registers_t* regs);
 
@@ -44,14 +47,29 @@ void idt_init() {
     idtr.limit = (uint16_t)sizeof(idt_entry_t) * 256 - 1;
     idtr.base = (uint64_t)&idt;
 
-    idt_set_gate(0, (uint64_t)isr0);
-    idt_set_gate(8, (uint64_t)isr8);
+    // CPU exceptions 0-15
+    idt_set_gate(0,  (uint64_t)isr0);
+    idt_set_gate(1,  (uint64_t)isr1);
+    idt_set_gate(2,  (uint64_t)isr2);
+    idt_set_gate(3,  (uint64_t)isr3);
+    idt_set_gate(4,  (uint64_t)isr4);
+    idt_set_gate(5,  (uint64_t)isr5);
+    idt_set_gate(6,  (uint64_t)isr6);
+    idt_set_gate(7,  (uint64_t)isr7);
+    idt_set_gate(8,  (uint64_t)isr8);
+    idt_set_gate(9,  (uint64_t)isr9);
+    idt_set_gate(10, (uint64_t)isr10);
+    idt_set_gate(11, (uint64_t)isr11);
+    idt_set_gate(12, (uint64_t)isr12);
     idt_set_gate(13, (uint64_t)isr13);
     idt_set_gate(14, (uint64_t)isr14);
+    idt_set_gate(15, (uint64_t)isr15);
+
+    // Hardware IRQs
     idt_set_gate(32, (uint64_t)isr32);
     idt_set_gate(33, (uint64_t)isr33);
     idt_set_gate(44, (uint64_t)isr44);
-    idt_set_gate(0x80, (uint64_t)isr128); // Changed from isr0x80
+    idt_set_gate(0x80, (uint64_t)isr128);
 
     pic_remap();
     load_idt(&idtr);
@@ -60,6 +78,11 @@ void idt_init() {
 // The core "Blue Screen" function
 void kpanic(registers_t* regs, const char* reason) {
     __asm__ volatile("cli"); // Disable interrupts immediately
+
+    // Bypass the compositor and write directly to the real framebuffer.
+    // The compositor backbuffer is never swapped during a panic, so without
+    // this the BSOD text is drawn off-screen and the display just freezes.
+    video_set_subsystem_target(get_framebuffer_addr());
 
     terminal_set_color(VGA_COLOR_WHITE, VGA_COLOR_BLUE); // Classic BSOD color
     terminal_clear();

@@ -86,7 +86,7 @@ void pmm_init(void* mb_info) {
                 if (addr >= (uint64_t)bitmap && addr < (uint64_t)bitmap + bitmap_size) continue;
 
                 uint64_t page_index = addr / PAGE_SIZE;
-                bitmap[page_index / 8] &= ~(1 << (page_index % 8)); // Mark Free
+                bitmap[page_index / 8] &= ~(1u << (page_index % 8)); // Mark Free
                 usable_ram += PAGE_SIZE;
             }
         }
@@ -99,8 +99,8 @@ void pmm_init(void* mb_info) {
 void* pmm_alloc() {
     // Start loop from a higher index to avoid low memory addresses
     for (uint64_t i = 1024; i < max_pages; i++) {
-        if (!(bitmap[i / 8] & (1 << (i % 8)))) {
-            bitmap[i / 8] |= (1 << (i % 8));
+        if (!(bitmap[i / 8] & (1u << (i % 8)))) {
+            bitmap[i / 8] |= (1u << (i % 8));
             return (void*)(i * PAGE_SIZE);
         }
     }
@@ -110,5 +110,5 @@ void* pmm_alloc() {
 
 void pmm_free(void* ptr) {
     uint64_t page_index = (uint64_t)ptr / PAGE_SIZE;
-    bitmap[page_index / 8] &= ~(1 << (page_index % 8));
+    bitmap[page_index / 8] &= ~(1u << (page_index % 8));
 }

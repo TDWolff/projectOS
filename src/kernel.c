@@ -20,6 +20,7 @@
 
 // Networking (Polaris-inspired)
 #include "net/net.h"
+#include "drivers/net/e1000.h"
 
 // Persistent storage scaffolding (Phase 0/1)
 #include "fs/pfs/pfs.h"
@@ -77,6 +78,7 @@ void kernel_main(void* mb_info) {
         // Update System UI (Clock) every second (approx 100 ticks)
         if (get_ticks() - last_tick >= 100) {
              systemui_update();
+             e1000_poll();
              last_tick = get_ticks();
         }
     }

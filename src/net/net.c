@@ -15,6 +15,8 @@
 #include "ip.h"
 
 #include "discovery.h"
+#include "loopback.h"
+#include "dhcp.h"
 
 // NIC drivers
 #include "../drivers/net/e1000.h"
@@ -60,13 +62,13 @@ net_nic_interfaces_t* net_get_nic(uint32_t idx) {
     return g_net_nics[idx];
 }
 
-void net_handle_packet_deferred(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic) {
+void net_handle_packet_deferred(void* packet, uint32_t packet_length, net_nic_interfaces_t* nic) {
     // ProjectOS doesn't have Polaris's full scheduler/thread API exposed here yet.
     // Keep the same conceptual hook point, but call directly for now.
     net_handle_packet(packet, packet_length, nic);
 }
 
-void net_handle_packet(void* packet, uint16_t packet_length, net_nic_interfaces_t* nic) {
+void net_handle_packet(void* packet, uint32_t packet_length, net_nic_interfaces_t* nic) {
     if (!packet || !nic) return;
     if (packet_length < sizeof(network_packet_t)) return;
 
@@ -96,16 +98,11 @@ void net_init(void) {
     // Protocol layers
     arp_init();
     // print to sys terminal saying ok
-    kprintf("NET: init ok (loopback up)\\n");
+    kprintf("NET: init ok (loopback up)\n");
 
     // Devices
     // Loopback registers itself and is always present.
-    // (Kept separate to mirror Polaris's layout.)
-    extern void loopback_init(void);
     loopback_init();
-
-    // Register loopback
-    extern net_nic_interfaces_t nic_loopback;
     (void)net_register_nic(&nic_loopback);
 
     // Probe hardware NIC(s)
@@ -113,4 +110,12 @@ void net_init(void) {
 
     // Select primary NIC (currently loopback-only, until a real NIC driver registers).
     net_discovery_run();
+
+    // If a real NIC came up, attempt DHCP to get a proper IP/gateway.
+    net_nic_interfaces_t* primary = net_get_primary_nic();
+    if (primary && !(primary->flags & IFF_LOOPBACK)) {
+        dhcp_request_lease(primary);
+        // Re-run discovery in case DHCP changed the NIC state.
+        net_discovery_run();
+    }
 }

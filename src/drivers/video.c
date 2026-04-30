@@ -265,16 +265,9 @@ void kprint(const char* str) {
 
 void terminal_clear() {
     if (!fb_addr) return;
-    
-    // Check if we are using wallpaper or a solid color
-    // For now, let's just clear to the desktop color, OR we should repaint wallpaper
-    // But since we are likely in a windowed mode, terminal_clear might not be the right metaphor
-    // used globally.
-    // draw_rect(0, 0, fb_width, fb_height, bg_color);
-    
-    // Position cursor at shell window start
-    cursor_x = 205; 
-    cursor_y = 185;
+    draw_rect(0, 0, fb_width, fb_height, bg_color);
+    cursor_x = 0;
+    cursor_y = 0;
 }
 
 void terminal_set_bg(uint32_t color) {
