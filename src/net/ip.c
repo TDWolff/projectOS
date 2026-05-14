@@ -2,6 +2,7 @@
 
 #include "icmp.h"
 #include "udp.h"
+#include "tcp.h"
 
 #include "../lib/string.h"
 #include "../mem/heap.h"
@@ -60,5 +61,7 @@ void ip_handle(ip_packet_t* packet, uint32_t length, uint8_t dest_mac[6], net_ni
         kfree(clone);
     } else if (packet->protocol == 17) {
         udp_handle(packet, length, dest_mac, nic);
+    } else if (packet->protocol == 6) {
+        tcp_handle(packet, length, dest_mac, nic);
     }
 }

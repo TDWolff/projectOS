@@ -17,6 +17,7 @@
 // Option codes
 #define DHCP_OPT_SUBNET_MASK  1
 #define DHCP_OPT_ROUTER       3
+#define DHCP_OPT_DNS_SERVER   6
 #define DHCP_OPT_REQ_IP       50
 #define DHCP_OPT_LEASE_TIME   51
 #define DHCP_OPT_MSG_TYPE     53

@@ -94,10 +94,14 @@ static void window_remove(window_t* win) {
 }
 
 void window_close(window_t* win) {
-    // Keep a single close path so it also cancels dragging, etc.
     if (!win) return;
     window_remove(win);
     if (g_focused_window == win) g_focused_window = 0;
+    if (win->content_cache) { kfree(win->content_cache); win->content_cache = 0; }
+}
+
+void window_mark_dirty(window_t* win) {
+    if (win) win->content_dirty = true;
 }
 
 static void window_register(window_t* win) {
@@ -173,6 +177,10 @@ window_t* window_create(int x, int y, int width, int height, const char* title) 
     win->restore_h = height;
     win->draw_content = 0;
     win->draw_content_user = 0;
+    win->content_dirty = true;
+    win->content_cache = 0;
+    win->cache_cw = 0;
+    win->cache_ch = 0;
 
     // Auto-register window
     window_register(win);
@@ -496,8 +504,45 @@ void window_draw(window_t* win) {
     // Draw Window Title (Dark Grey Text)
     video_draw_text(title_x, title_y, win->title, 0xFF404040);
 
-    // 7. Draw window content (apps) on top of the window frame.
+    // 7. Draw window content using the cache.
+    // On dirty frames: call the renderer and save the result to the cache.
+    // On clean frames: restore the cache directly — no font rendering, no fill.
     if (win->draw_content) {
-        win->draw_content(win, win->draw_content_user);
+        int cx, cy, cw, ch;
+        window_get_content_rect(win, &cx, &cy, &cw, &ch);
+
+        // Reallocate cache if size changed (first use or window resized).
+        if (cw > 0 && ch > 0 && (win->cache_cw != cw || win->cache_ch != ch)) {
+            if (win->content_cache) kfree(win->content_cache);
+            win->content_cache = (uint32_t*)kmalloc((uint32_t)(cw * ch) * sizeof(uint32_t));
+            win->cache_cw = cw;
+            win->cache_ch = ch;
+            win->content_dirty = true;
+        }
+
+        uint32_t* draw   = video_get_draw_target();
+        uint32_t  stride = get_fb_pitch() / 4; // pixels per row in draw buffer
+
+        if (win->content_dirty || !win->content_cache) {
+            // Full render into the draw buffer.
+            win->draw_content(win, win->draw_content_user);
+            win->content_dirty = false;
+
+            // Save content region into cache (one memcpy per row).
+            if (win->content_cache && draw) {
+                for (int row = 0; row < ch; row++) {
+                    memcpy(&win->content_cache[row * cw],
+                           &draw[(cy + row) * stride + cx],
+                           (uint32_t)cw * sizeof(uint32_t));
+                }
+            }
+        } else if (win->content_cache && draw) {
+            // Restore cache to draw buffer — fast rectangular blit.
+            for (int row = 0; row < ch; row++) {
+                memcpy(&draw[(cy + row) * stride + cx],
+                       &win->content_cache[row * cw],
+                       (uint32_t)cw * sizeof(uint32_t));
+            }
+        }
     }
 }

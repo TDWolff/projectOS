@@ -345,9 +345,12 @@ void terminal_window_scroll(terminal_window_t* term, int delta_lines) {
     if (term->scroll_offset > max_offset) term->scroll_offset = max_offset;
 
     term_sync_visible_cells(term);
+    if (term->win) window_mark_dirty(term->win);
 }
 
 void terminal_window_shell_putc(char c, void* user) {
     terminal_window_t* term = (terminal_window_t*)user;
     terminal_window_input(term, c);
+    // Mark the window dirty so the compositor re-renders on the next frame.
+    if (term && term->win) window_mark_dirty(term->win);
 }

@@ -20,8 +20,9 @@ typedef struct __attribute__((packed)) {
 void icmp_echo_reply(ip_packet_t* ip_pack, uint32_t length, uint8_t dest_mac[6], net_nic_interfaces_t* nic);
 
 // Self-test/diagnostic helpers: latch when we observe an echo reply.
-void icmp_observe_for_selftest(uint16_t identifier_be, uint16_t sequence_be);
+void icmp_observe_for_selftest(uint16_t identifier_be, uint16_t sequence_be, uint8_t ttl);
 bool icmp_selftest_wait_for_echo_reply(uint16_t identifier_be, uint16_t sequence_be, uint32_t spin_iters);
 void icmp_selftest_reset(void);
+uint8_t icmp_selftest_get_ttl(void);
 
 #endif

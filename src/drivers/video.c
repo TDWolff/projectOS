@@ -34,6 +34,10 @@ static uint32_t* get_draw_buffer() {
     return fb_addr;
 }
 
+uint32_t* video_get_draw_target(void) {
+    return get_draw_buffer();
+}
+
 static font_t loaded_font = {0};
 
 // Helper to pack r,g,b into uint32

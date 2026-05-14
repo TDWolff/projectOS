@@ -6,19 +6,24 @@ static struct {
     bool seen;
     uint16_t id_be;
     uint16_t seq_be;
+    uint8_t ttl;
 } g_icmp_selftest = {0};
 
 void icmp_selftest_reset(void) {
     g_icmp_selftest.seen = false;
     g_icmp_selftest.id_be = 0;
     g_icmp_selftest.seq_be = 0;
+    g_icmp_selftest.ttl = 0;
 }
 
-void icmp_observe_for_selftest(uint16_t identifier_be, uint16_t sequence_be) {
+void icmp_observe_for_selftest(uint16_t identifier_be, uint16_t sequence_be, uint8_t ttl) {
     g_icmp_selftest.seen = true;
     g_icmp_selftest.id_be = identifier_be;
     g_icmp_selftest.seq_be = sequence_be;
+    g_icmp_selftest.ttl = ttl;
 }
+
+uint8_t icmp_selftest_get_ttl(void) { return g_icmp_selftest.ttl; }
 
 bool icmp_selftest_wait_for_echo_reply(uint16_t identifier_be, uint16_t sequence_be, uint32_t spin_iters) {
     for (volatile uint32_t i = 0; i < spin_iters; i++) {
@@ -44,7 +49,7 @@ void icmp_echo_reply(ip_packet_t* ip_pack, uint32_t length, uint8_t dest_mac[6],
         uint32_t ihl_bytes = (uint32_t)ip_pack->internet_header_length * 4u;
         if (length >= ihl_bytes + sizeof(icmp_header_t) + sizeof(icmp_echo_hdr_t)) {
             icmp_echo_hdr_t* eh = (icmp_echo_hdr_t*)icmp_pack->data;
-            icmp_observe_for_selftest(eh->identifier, eh->sequence);
+            icmp_observe_for_selftest(eh->identifier, eh->sequence, ip_pack->time_to_live);
         }
         return;
     }

@@ -24,7 +24,10 @@
 
 static dock_app_t* g_dock_head = 0;
 static int g_dock_count = 0;
-static bool g_was_pressed = false;
+static bool g_was_pressed   = false;
+static int  g_last_mouse_x  = -1;
+static int  g_last_mouse_y  = -1;
+static bool g_dock_drawn    = false; // force first-frame draw
 
 // Cache dock rect for hit testing
 static int g_dock_x = 0;
@@ -212,10 +215,8 @@ static void dock_draw_background() {
 
 static void dock_free_icon(dock_app_t* app) {
     if (!app) return;
-    if (app->icon_rgba) {
-        kfree(app->icon_rgba);
-        app->icon_rgba = 0;
-    }
+    if (app->icon_rgba)   { kfree(app->icon_rgba);   app->icon_rgba   = 0; }
+    if (app->icon_scaled) { kfree(app->icon_scaled); app->icon_scaled = 0; }
     app->icon_w = 0;
     app->icon_h = 0;
 }
@@ -237,23 +238,51 @@ static void dock_try_load_icon(dock_app_t* app) {
     app->icon_rgba = img.pixels;
     app->icon_w = img.width;
     app->icon_h = img.height;
+
+    // Pre-scale once to the exact dock icon size so per-frame drawing is a
+    // plain blit with no division — replacing ~6000 divide ops per icon per frame.
+    uint32_t* cache = (uint32_t*)kmalloc(DOCK_ICON_SIZE * DOCK_ICON_SIZE * sizeof(uint32_t));
+    if (cache) {
+        for (int y = 0; y < DOCK_ICON_SIZE; y++) {
+            int sy = (y * app->icon_h) / DOCK_ICON_SIZE;
+            for (int x = 0; x < DOCK_ICON_SIZE; x++) {
+                int sx = (x * app->icon_w) / DOCK_ICON_SIZE;
+                cache[y * DOCK_ICON_SIZE + x] = app->icon_rgba[sy * app->icon_w + sx];
+            }
+        }
+        app->icon_scaled = cache;
+    }
 }
 
 static void dock_draw_icon_scaled(int dst_x, int dst_y, int dst_w, int dst_h, const dock_app_t* app) {
-    if (!app || !app->icon_rgba || app->icon_w <= 0 || app->icon_h <= 0) {
-        // placeholder
+    if (!app || app->icon_w <= 0 || app->icon_h <= 0) {
         graphics_fill_round_rect_alpha(dst_x, dst_y, dst_w, dst_h, 10, 0xFF2C2C2C, 180, false, 0, false);
         return;
     }
 
-    // Nearest-neighbor scaling.
+    // Fast path: blit from the pre-scaled cache (built once on icon load).
+    if (app->icon_scaled && dst_w == DOCK_ICON_SIZE && dst_h == DOCK_ICON_SIZE) {
+        for (int y = 0; y < DOCK_ICON_SIZE; y++) {
+            for (int x = 0; x < DOCK_ICON_SIZE; x++) {
+                uint32_t px = app->icon_scaled[y * DOCK_ICON_SIZE + x];
+                if ((px >> 24) == 0) continue;
+                putpixel_alpha(dst_x + x, dst_y + y, px);
+            }
+        }
+        return;
+    }
+
+    // Slow path fallback: nearest-neighbor from raw source (non-standard size).
+    if (!app->icon_rgba) {
+        graphics_fill_round_rect_alpha(dst_x, dst_y, dst_w, dst_h, 10, 0xFF2C2C2C, 180, false, 0, false);
+        return;
+    }
     for (int y = 0; y < dst_h; y++) {
         int sy = (y * app->icon_h) / dst_h;
         for (int x = 0; x < dst_w; x++) {
             int sx = (x * app->icon_w) / dst_w;
             uint32_t px = app->icon_rgba[sy * app->icon_w + sx];
-            uint8_t a = (uint8_t)((px >> 24) & 0xFF);
-            if (a == 0) continue;
+            if ((px >> 24) == 0) continue;
             putpixel_alpha(dst_x + x, dst_y + y, px);
         }
     }
@@ -402,18 +431,38 @@ bool dock_remove_app(const char* app_path) {
 }
 
 void dock_update(int mouse_x, int mouse_y, bool mouse_pressed_left) {
+    dock_compute_rect();
+
+    bool just_pressed = mouse_pressed_left && !g_was_pressed;
+    g_was_pressed = mouse_pressed_left;
+
+    // Determine whether the mouse is in or was in the dock zone.
+    bool over_dock = (mouse_x >= g_dock_x && mouse_x < g_dock_x + g_dock_w &&
+                      mouse_y >= g_dock_y && mouse_y < g_dock_y + g_dock_h);
+    bool was_over  = (g_last_mouse_x >= g_dock_x && g_last_mouse_x < g_dock_x + g_dock_w &&
+                      g_last_mouse_y >= g_dock_y && g_last_mouse_y < g_dock_y + g_dock_h);
+
+    bool mouse_moved = (mouse_x != g_last_mouse_x || mouse_y != g_last_mouse_y);
+    g_last_mouse_x = mouse_x;
+    g_last_mouse_y = mouse_y;
+
+    // Skip redraw when nothing dock-relevant changed.
+    // Canvas retains the previous render so the dock stays visible.
+    bool needs_draw = !g_dock_drawn || just_pressed ||
+                      (over_dock && mouse_moved) ||
+                      (was_over  && !over_dock);   // mouse just left — clear hover
+    if (!needs_draw) return;
+    g_dock_drawn = true;
+
     dock_draw_background();
 
-    // layout icons horizontally centered within dock
-    int icon = DOCK_ICON_SIZE;
+    int icon  = DOCK_ICON_SIZE;
     int count = g_dock_count;
     if (count <= 0) return;
 
     int total_w = count * icon + (count - 1) * DOCK_ICON_PAD;
     int start_x = g_dock_x + (g_dock_w - total_w) / 2;
-    int y = g_dock_y + (g_dock_h - icon) / 2;
-
-    bool just_pressed = mouse_pressed_left && !g_was_pressed;
+    int y       = g_dock_y + (g_dock_h - icon) / 2;
 
     dock_app_t* cur = g_dock_head;
     for (int i = 0; cur; i++, cur = cur->next) {
@@ -421,7 +470,6 @@ void dock_update(int mouse_x, int mouse_y, bool mouse_pressed_left) {
 
         int x = start_x + i * (icon + DOCK_ICON_PAD);
 
-        // hover highlight
         bool hover = (mouse_x >= x && mouse_x < x + icon && mouse_y >= y && mouse_y < y + icon);
         if (hover) {
             graphics_fill_round_rect_alpha(x - 2, y - 2, icon + 4, icon + 4, 12, 0xFF000000, 30, false, 0, false);
@@ -433,6 +481,4 @@ void dock_update(int mouse_x, int mouse_y, bool mouse_pressed_left) {
             dock_launch_app(cur);
         }
     }
-
-    g_was_pressed = mouse_pressed_left;
 }

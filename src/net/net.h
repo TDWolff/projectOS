@@ -48,6 +48,7 @@ typedef struct net_nic_interfaces {
     uint8_t ip_address[4];
     uint8_t subnet[4];
     uint8_t gateway[4];
+    uint8_t dns_server[4];  // from DHCP option 6; all-zero = not set
 
     uint8_t* (*get_mac_addr)(void);
     void (*send_packet)(uint8_t* dest_mac, void* payload, uint32_t payload_len, uint16_t ethertype);

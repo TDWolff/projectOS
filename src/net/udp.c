@@ -1,5 +1,6 @@
 #include "udp.h"
 #include "dhcp.h"
+#include "dns.h"
 
 // Optional self-test hook (defined in net/selftest.c).
 // Weak linkage isn't available in our simple build, so we just declare it.
@@ -30,6 +31,12 @@ void udp_handle(ip_packet_t* packet, uint32_t length, uint8_t dest_mac[6], net_n
             ? length - (uint32_t)sizeof(ip_packet_t) - (uint32_t)sizeof(udp_packet_t)
             : 0;
         dhcp_handle((dhcp_packet_t*)udp_pack->data, dhcp_len, nic);
+    } else if (BSWAP16(udp_pack->destination_port) == DNS_CLIENT_PORT) {
+        // DNS reply
+        uint32_t dns_len = length > (uint32_t)(sizeof(ip_packet_t) + sizeof(udp_packet_t))
+            ? length - (uint32_t)sizeof(ip_packet_t) - (uint32_t)sizeof(udp_packet_t)
+            : 0;
+        dns_handle_response(udp_pack->data, dns_len);
     }
 }
 

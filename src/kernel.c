@@ -22,6 +22,8 @@
 #include "net/net.h"
 #include "drivers/net/e1000.h"
 
+#include "cpu/task.h"
+
 // Persistent storage scaffolding (Phase 0/1)
 #include "fs/pfs/pfs.h"
 
@@ -61,25 +63,35 @@ void kernel_main(void* mb_info) {
     shell_init();
     shell_set_output_sink(0, 0);
 
-    uint64_t last_tick = 0;
+    // Activate the round-robin scheduler and create the shell worker task.
+    // The shell worker runs execute_command so the UI loop below is never blocked.
+    task_init();
+    create_task(shell_worker_entry);
 
-    while(1) { 
-        shell_check_click(); // Keep checking for mouse clicks on the taskbar
-        
-        // Handle Window Input (Dragging)
+    uint64_t last_tick  = 0;
+    uint64_t last_frame = 0;
+
+    // UI loop: sleep between timer ticks so we run at exactly 100 Hz max.
+    // The shell worker task handles commands; this loop is pure UI — never blocks.
+    while(1) {
+        __asm__ volatile("sti");
+        uint64_t now = get_ticks();
+        if (now == last_frame) {
+            // Nothing to do until the next timer tick — hand CPU back.
+            __asm__ volatile("hlt");
+            continue;
+        }
+        last_frame = now;
+
+        shell_check_click();
         window_handle_mouse(mouse_get_x(), mouse_get_y(), mouse_get_buttons());
-
-    // Dock hover/click + draw icons
-    dock_update(mouse_get_x(), mouse_get_y(), (mouse_get_buttons() & 1) != 0);
-        
-        // Refresh the screen from double buffer
+        dock_update(mouse_get_x(), mouse_get_y(), (mouse_get_buttons() & 1) != 0);
         compositor_swap_buffers();
-        
-        // Update System UI (Clock) every second (approx 100 ticks)
-        if (get_ticks() - last_tick >= 100) {
-             systemui_update();
-             e1000_poll();
-             last_tick = get_ticks();
+
+        if (now - last_tick >= 100) {
+            systemui_update();
+            e1000_poll();
+            last_tick = now;
         }
     }
 }

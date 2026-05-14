@@ -26,9 +26,19 @@ typedef struct window_t {
     // When this window is focused, decoded keyboard chars are delivered here.
     void (*on_char_input)(struct window_t* win, char c, void* user);
     void* on_char_input_user;
-    // Pointers for future use (e.g., content buffer, next window in stack)
+    // Content cache: pre-rendered content pixels saved after a dirty render.
+    // On subsequent frames the cache is blitted back instead of re-rendering,
+    // cutting per-frame text rendering from O(rows×cols) to O(cw×ch) memcpy.
+    bool      content_dirty;   // needs full re-render this frame
+    uint32_t* content_cache;   // allocated to cache_cw × cache_ch pixels
+    int       cache_cw;
+    int       cache_ch;
+
     struct window_t* next;
 } window_t;
+
+// Mark a window's content as needing re-render next frame.
+void window_mark_dirty(window_t* win);
 
 // Create a new window object
 window_t* window_create(int x, int y, int width, int height, const char* title);

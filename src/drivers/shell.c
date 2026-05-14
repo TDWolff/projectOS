@@ -20,6 +20,8 @@
 #include "../net/arp.h"
 #include "../net/ip.h"
 #include "../net/icmp.h"
+#include "../net/dns.h"
+#include "../net/tcp.h"
 #include "../drivers/net/e1000.h"
 #include "timer.h"
 
@@ -45,14 +47,40 @@ void sh_putc(char c) {
     shell_out_char(c);
 }
 
-void sh_printf(const char* s) {
-    if (!s) return;
-    for (int i = 0; s[i]; i++) shell_out_char(s[i]);
+static void sh_print_uint(uint64_t n) {
+    if (n == 0) { shell_out_char('0'); return; }
+    char buf[21];
+    int i = 0;
+    while (n) { buf[i++] = '0' + (char)(n % 10); n /= 10; }
+    while (i--) shell_out_char(buf[i]);
+}
+
+void sh_printf(const char* fmt, ...) {
+    if (!fmt) return;
+    __builtin_va_list ap;
+    __builtin_va_start(ap, fmt);
+    for (int i = 0; fmt[i]; i++) {
+        if (fmt[i] != '%') { shell_out_char(fmt[i]); continue; }
+        i++;
+        switch (fmt[i]) {
+            case 'd': {
+                int v = __builtin_va_arg(ap, int);
+                if (v < 0) { shell_out_char('-'); sh_print_uint((uint64_t)-(int64_t)v); }
+                else sh_print_uint((uint64_t)v);
+                break;
+            }
+            case 'u': sh_print_uint((uint64_t)__builtin_va_arg(ap, unsigned int)); break;
+            case 's': { const char* s = __builtin_va_arg(ap, const char*); if (s) for (; *s; s++) shell_out_char(*s); break; }
+            case 'c': shell_out_char((char)__builtin_va_arg(ap, int)); break;
+            case '%': shell_out_char('%'); break;
+            default:  shell_out_char('%'); shell_out_char(fmt[i]); break;
+        }
+    }
+    __builtin_va_end(ap);
 }
 
 void shell_out_str(const char* s) {
-    // Backwards-compatible wrapper.
-    sh_printf(s);
+    sh_printf("%s", s);
 }
 
 void shell_print_prompt() {
@@ -192,9 +220,9 @@ static bool parse_ip4(const char* s, uint8_t out[4]) {
     return true;
 }
 
-// Send one ICMP echo to target_ip via nic and wait up to timeout_ticks for reply.
-// Re-enables interrupts during the wait so get_ticks() advances normally.
-static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
+// Returns latency in ms on success, -1 on timeout/error.
+// seq_num is 1-based. Re-enables interrupts during waits so get_ticks() advances.
+static int32_t shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic, uint16_t seq_num) {
     // Decide next-hop: same subnet → ARP target directly, else ARP gateway.
     bool on_subnet = true;
     for (int i = 0; i < 4; i++) {
@@ -206,7 +234,6 @@ static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
     uint8_t* nexthop_ip = on_subnet ? target_ip : nic->gateway;
 
     // Resolve next-hop MAC via ARP.
-    // Re-enable interrupts so the timer ticks while we wait.
     uint8_t dest_mac[6] = {0};
     if (!arp_resolve(nexthop_ip, dest_mac)) {
         arp_lookup(nexthop_ip, nic);
@@ -222,27 +249,28 @@ static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
 
     if (!arp_resolve(nexthop_ip, dest_mac)) {
         sh_printf("ping: ARP failed - no route to host\n");
-        return;
+        return -1;
     }
 
-    // Build ICMP echo request.
     const uint16_t ident_be    = BSWAP16(0x1CE0);
-    const uint16_t seq_be      = BSWAP16(1);
-    const uint32_t payload_len = (uint32_t)sizeof(icmp_echo_hdr_t) + 8;
+    const uint16_t seq_be      = BSWAP16(seq_num);
+    const uint32_t data_bytes  = 56; // standard ping payload
+    const uint32_t payload_len = (uint32_t)sizeof(icmp_echo_hdr_t) + data_bytes;
     const uint32_t ip_len      = (uint32_t)sizeof(ip_packet_t)
                                  + (uint32_t)sizeof(icmp_header_t)
                                  + payload_len;
 
     ip_packet_t* ip = (ip_packet_t*)kmalloc(ip_len);
-    if (!ip) { sh_printf("ping: out of memory\n"); return; }
+    if (!ip) { sh_printf("ping: out of memory\n"); return -1; }
     memset(ip, 0, ip_len);
 
-    ip->protocol               = 1; // ICMP
+    ip->protocol               = 1;
     ip->internet_header_length = 5;
+    ip->time_to_live           = 64;
     memcpy(ip->destination_protocol_addr, target_ip, 4);
 
-    icmp_header_t*   icmp = (icmp_header_t*)ip->data;
-    icmp->type     = 8; // echo request
+    icmp_header_t* icmp = (icmp_header_t*)ip->data;
+    icmp->type     = 8;
     icmp->code     = 0;
     icmp->checksum = 0;
 
@@ -251,7 +279,7 @@ static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
     echo->sequence   = seq_be;
 
     uint8_t* p = (uint8_t*)icmp->data + sizeof(icmp_echo_hdr_t);
-    for (uint32_t i = 0; i < 8; i++) p[i] = (uint8_t)(0xA0u + i);
+    for (uint32_t i = 0; i < data_bytes; i++) p[i] = (uint8_t)(i & 0xFF);
 
     icmp->checksum = ip_calculate_checksum(
         icmp, (int)(sizeof(icmp_header_t) + payload_len));
@@ -262,15 +290,15 @@ static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
     kfree(ip);
 
     if (nic->tx_packets == tx_before) {
-        sh_printf("ping: TX ring full - packet not sent\n");
-        return;
+        sh_printf("ping: seq=%d TX ring full\n", seq_num);
+        return -1;
     }
 
-    // Wait up to 4 seconds for an ICMP echo reply.
-    // Re-enable interrupts so the timer ISR can advance get_ticks().
+    // Wait up to 4 seconds for reply; interrupts on so timer advances.
     bool got_reply = false;
     __asm__ volatile("sti");
-    uint64_t deadline = get_ticks() + 400; // 4 seconds at 100 Hz
+    uint64_t start    = get_ticks();
+    uint64_t deadline = start + 400; // 4 seconds at 100 Hz
     while (get_ticks() < deadline) {
         e1000_poll();
         if (icmp_selftest_wait_for_echo_reply(ident_be, seq_be, 1)) {
@@ -279,23 +307,61 @@ static void shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic) {
         }
         __asm__ volatile("pause");
     }
+    uint64_t end = get_ticks();
     __asm__ volatile("cli");
 
     if (got_reply) {
-        sh_printf("ping: reply from ");
+        uint32_t ms  = (uint32_t)((end - start) * 10); // 100 Hz → 10 ms/tick
+        uint8_t  ttl = icmp_selftest_get_ttl();
+        sh_printf("%d bytes from ", (int)(sizeof(icmp_header_t) + payload_len));
         sh_print_ip4(target_ip);
-        sh_printf(" ok\n");
+        sh_printf(": icmp_seq=%d ttl=%d time=%d ms\n", (int)seq_num, (int)ttl, (int)ms);
+        return (int32_t)ms;
     } else {
-        sh_printf("ping: request timed out\n");
-        sh_printf("  (if pinging internet IPs, try: ping ");
-        sh_print_ip4(nic->gateway);
-        sh_printf(" first)\n");
+        sh_printf("Request timeout for icmp_seq=%d\n", (int)seq_num);
+        return -1;
     }
 }
 
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
 static int buffer_idx = 0;
+
+// Pending command: set by the keyboard ISR (shell_update), consumed by the
+// main loop (shell_run_pending_command). Keeps heavy work out of the ISR so
+// interrupts (timer, mouse, compositor) stay alive during command execution.
+static char g_pending_command[MAX_COMMAND_LEN];
+static bool g_command_ready = false;
+
+// Forward declaration — defined later in this file.
+void execute_command(char* input);
+
+bool shell_has_pending_command(void) { return g_command_ready; }
+
+void shell_run_pending_command(void) {
+    if (!g_command_ready) return;
+    g_command_ready = false;
+    execute_command(g_pending_command);
+    shell_print_prompt();
+}
+
+// Entry point for the shell worker task. Runs as a separate scheduled task so
+// the main UI loop (compositor, mouse, clock) is never blocked by commands.
+void shell_worker_entry(void) {
+    while (1) {
+        // Always re-enable interrupts. Some commands (e.g. ping) do cli before
+        // returning; without this the timer can't preempt and the UI freezes.
+        __asm__ volatile("sti");
+        if (g_command_ready) {
+            shell_run_pending_command();
+        } else {
+            // Nothing to do: halt until the next interrupt (timer or keyboard).
+            // This gives the UI task 100% of CPU time when the shell is idle,
+            // instead of burning cycles in a spin loop at 50% CPU share.
+            __asm__ volatile("hlt");
+        }
+    }
+}
 
 void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
@@ -318,7 +384,7 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip>, clear, ticks, divzero, echo <text>, run <program>\n");
+    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip|host>, nslookup <host>, wget <url>, clear, run <program>\n");
     sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
     sh_printf("  - pfs: shows persistence (/user) mount status\n");
     sh_printf("  - netif: lists network interfaces\n");
@@ -329,20 +395,207 @@ void execute_command(char* input) {
     else if (input[0]=='p' && input[1]=='i' && input[2]=='n' && input[3]=='g' && input[4]==' ') {
         const char* ip_str = input + 5;
         uint8_t target[4];
+        bool resolved_from_name = false;
         if (!parse_ip4(ip_str, target)) {
-            sh_printf("ping: invalid IP address\n");
-        } else {
+            // Not a bare IP — try DNS resolution
+            net_nic_interfaces_t* nic_tmp = net_get_primary_nic();
+            if (!nic_tmp || (nic_tmp->flags & IFF_LOOPBACK)) {
+                sh_printf("ping: no real NIC available\n");
+                goto ping_done;
+            }
+            sh_printf("Resolving %s...\n", ip_str);
+            if (!dns_resolve(ip_str, target, nic_tmp, 0)) {
+                sh_printf("ping: cannot resolve %s\n", ip_str);
+                goto ping_done;
+            }
+            resolved_from_name = true;
+        }
+        {
             net_nic_interfaces_t* nic = net_get_primary_nic();
             if (!nic || (nic->flags & IFF_LOOPBACK)) {
                 sh_printf("ping: no real NIC available\n");
             } else {
-                sh_printf("ping ");
+                sh_printf("PING %s (", ip_str);
                 sh_print_ip4(target);
-                sh_printf("...\n");
-                shell_ping_once(target, nic);
+                sh_printf("): 64 bytes of data.\n");
+                (void)resolved_from_name;
+
+                int sent = 0, received = 0;
+                uint32_t min_ms = 0xFFFFFFFFu, max_ms = 0, total_ms = 0;
+
+                for (int seq = 1; seq <= 4; seq++) {
+                    int32_t ms = shell_ping_once(target, nic, (uint16_t)seq);
+                    sent++;
+                    if (ms >= 0) {
+                        received++;
+                        uint32_t ums = (uint32_t)ms;
+                        if (ums < min_ms) min_ms = ums;
+                        if (ums > max_ms) max_ms = ums;
+                        total_ms += ums;
+                    }
+                    // ~1 second between pings (100 ticks at 100 Hz)
+                    if (seq < 4) {
+                        __asm__ volatile("sti");
+                        uint64_t wait = get_ticks() + 100;
+                        while (get_ticks() < wait) { e1000_poll(); __asm__ volatile("pause"); }
+                        __asm__ volatile("cli");
+                    }
+                }
+
+                sh_printf("--- ping statistics ---\n");
+                sh_printf("%d packets transmitted, %d received, %d%% packet loss\n",
+                          sent, received, sent > 0 ? (sent - received) * 100 / sent : 0);
+                if (received > 0) {
+                    sh_printf("rtt min/avg/max = %d/%d/%d ms\n",
+                              (int)min_ms,
+                              (int)(total_ms / (uint32_t)received),
+                              (int)max_ms);
+                }
             }
         }
-    } 
+        ping_done:;
+    }
+    else if (input[0]=='n' && input[1]=='s' && input[2]=='l' && input[3]=='o' &&
+             input[4]=='o' && input[5]=='k' && input[6]=='u' && input[7]=='p' && input[8]==' ') {
+        const char* hostname = input + 9;
+        if (!hostname[0]) {
+            sh_printf("usage: nslookup <hostname>\n");
+        } else {
+            net_nic_interfaces_t* nic = net_get_primary_nic();
+            if (!nic || (nic->flags & IFF_LOOPBACK)) {
+                sh_printf("nslookup: no real NIC available\n");
+            } else {
+                sh_printf("Resolving ");
+                sh_printf(hostname);
+                sh_printf("...\n");
+                uint8_t resolved[4] = {0};
+                if (dns_resolve(hostname, resolved, nic, 0)) {
+                    sh_printf("Server: ");
+                    uint8_t* srv = nic->dns_server[0] ? nic->dns_server : (uint8_t*)"\x08\x08\x08\x08";
+                    sh_print_ip4(srv);
+                    sh_printf("\nAddress: ");
+                    sh_print_ip4(resolved);
+                    sh_printf("\n");
+                } else {
+                    uint32_t rx  = dns_dbg_rx_count();
+                    uint32_t mis = dns_dbg_id_mismatch_count();
+                    if (rx == 0) {
+                        sh_printf("nslookup: no response received (query may not have left the VM)\n");
+                    } else if (mis == rx) {
+                        sh_printf("nslookup: got %d response(s) but all had wrong transaction ID\n", (int)rx);
+                    } else {
+                        sh_printf("nslookup: got %d response(s) but no A record found\n", (int)rx);
+                    }
+                }
+            }
+        }
+    }
+    else if (input[0]=='w' && input[1]=='g' && input[2]=='e' && input[3]=='t' && input[4]==' ') {
+        const char* url = input + 5;
+
+        // --- parse http://hostname/path ---
+        if (url[0]!='h' || url[1]!='t' || url[2]!='t' || url[3]!='p' ||
+            url[4]!=':' || url[5]!='/' || url[6]!='/') {
+            sh_printf("wget: only http:// URLs supported\n");
+            goto wget_done;
+        }
+        const char* host_start = url + 7;
+        const char* host_end   = host_start;
+        while (*host_end && *host_end != '/') host_end++;
+
+        if (host_end == host_start) { sh_printf("wget: empty hostname\n"); goto wget_done; }
+
+        char hostname[128];
+        uint32_t hlen = (uint32_t)(host_end - host_start);
+        if (hlen >= sizeof(hostname)) { sh_printf("wget: hostname too long\n"); goto wget_done; }
+        for (uint32_t i = 0; i < hlen; i++) hostname[i] = host_start[i];
+        hostname[hlen] = 0;
+
+        // path (default to "/" if missing)
+        char path[256];
+        if (*host_end == '/') {
+            uint32_t plen = 0;
+            const char* p = host_end;
+            while (*p && plen < sizeof(path) - 1) path[plen++] = *p++;
+            path[plen] = 0;
+        } else {
+            path[0] = '/'; path[1] = 0;
+        }
+
+        net_nic_interfaces_t* nic = net_get_primary_nic();
+        if (!nic || (nic->flags & IFF_LOOPBACK)) {
+            sh_printf("wget: no real NIC available\n");
+            goto wget_done;
+        }
+
+        // --- resolve hostname (or parse as IP) ---
+        uint8_t remote_ip[4] = {0};
+        if (!parse_ip4(hostname, remote_ip)) {
+            sh_printf("Resolving %s...\n", hostname);
+            if (!dns_resolve(hostname, remote_ip, nic, 0)) {
+                sh_printf("wget: cannot resolve %s\n", hostname);
+                goto wget_done;
+            }
+        }
+
+        sh_printf("Connecting to %s (", hostname);
+        sh_print_ip4(remote_ip);
+        sh_printf("):80...\n");
+
+        // --- TCP connect ---
+        tcp_conn_t* conn = tcp_connect(remote_ip, 80, nic);
+        if (!conn) { sh_printf("wget: connection refused or timed out\n"); goto wget_done; }
+        sh_printf("Connected.\n");
+
+        // --- build HTTP/1.0 GET request ---
+        char req[512];
+        int rlen = 0;
+        const char* s;
+        for (s = "GET ";              *s && rlen<511; s++) req[rlen++] = *s;
+        for (s = path;                *s && rlen<511; s++) req[rlen++] = *s;
+        for (s = " HTTP/1.0\r\nHost: "; *s && rlen<511; s++) req[rlen++] = *s;
+        for (s = hostname;            *s && rlen<511; s++) req[rlen++] = *s;
+        for (s = "\r\nConnection: close\r\nUser-Agent: ProjectOS/1.0\r\n\r\n";
+             *s && rlen<511; s++) req[rlen++] = *s;
+        req[rlen] = 0;
+
+        tcp_send(conn, (uint8_t*)req, (uint32_t)rlen);
+
+        // --- stream response to terminal ---
+        sh_printf("---\n");
+        uint32_t total   = 0;
+        uint8_t  rbuf[256];
+
+        __asm__ volatile("sti");
+        uint64_t deadline   = get_ticks() + 1000; // 10s hard limit
+        uint64_t idle_since = get_ticks();
+
+        while (1) {
+            e1000_poll();
+
+            uint32_t n = tcp_recv(conn, rbuf, sizeof(rbuf));
+            if (n > 0) {
+                for (uint32_t i = 0; i < n; i++) sh_putc((char)rbuf[i]);
+                total     += n;
+                idle_since = get_ticks();
+                deadline   = get_ticks() + 1000; // reset hard limit on activity
+            }
+
+            if (tcp_is_done(conn)) break;
+
+            uint64_t now = get_ticks();
+            if (now >= deadline) break;
+            if (now - idle_since > 300) break; // 3s idle = server done sending
+            __asm__ volatile("pause");
+        }
+        __asm__ volatile("cli");
+
+        sh_printf("\n---\n%d bytes received.\n", (int)total);
+
+        tcp_close(conn);
+        tcp_free(conn);
+        wget_done:;
+    }
     // PFS status
     else if (strcmp(input, "pfs") == 0) {
         const pfs_state_t* st = pfs_get_state();
@@ -596,11 +849,16 @@ void shell_update(char c) {
 
     if (c == '\n') {
         command_buffer[buffer_idx] = '\0';
-    sh_printf("\n");
-        execute_command(command_buffer);
+        sh_printf("\n");
+        // Don't run the command here — we're inside the keyboard ISR with
+        // interrupts disabled (interrupt gate 0x8E). Queue it for the main
+        // loop so timer/mouse/compositor keep running during execution.
+        if (!g_command_ready) {
+            memcpy(g_pending_command, command_buffer, MAX_COMMAND_LEN);
+            g_command_ready = true;
+        }
         memset(command_buffer, 0, MAX_COMMAND_LEN);
         buffer_idx = 0;
-    shell_print_prompt();
     } else if (c == '\b') {
         if (buffer_idx > 0) {
             buffer_idx--;

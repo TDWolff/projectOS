@@ -27,6 +27,7 @@ static uint8_t g_offered_ip[4] = {0};
 static uint8_t g_server_ip[4]  = {0};
 static uint8_t g_subnet[4]     = {0};
 static uint8_t g_gateway[4]    = {0};
+static uint8_t g_dns[4]        = {0};
 
 bool dhcp_is_bound(void) { return g_state == DHCP_STATE_BOUND; }
 
@@ -183,6 +184,7 @@ void dhcp_handle(dhcp_packet_t* pkt, uint32_t length, net_nic_interfaces_t* nic)
         memcpy(g_offered_ip, pkt->yiaddr, 4);
         parse_opt_ip(pkt->options, opts_len, DHCP_OPT_SUBNET_MASK, g_subnet);
         parse_opt_ip(pkt->options, opts_len, DHCP_OPT_ROUTER,      g_gateway);
+        parse_opt_ip(pkt->options, opts_len, DHCP_OPT_DNS_SERVER,  g_dns);
         g_got_ack = true;
     }
 }
@@ -233,8 +235,9 @@ bool dhcp_request_lease(net_nic_interfaces_t* nic) {
 
     // Apply the lease to the NIC
     memcpy(nic->ip_address, g_offered_ip, 4);
-    if (g_subnet[0] != 0) memcpy(nic->subnet, g_subnet, 4);
-    if (g_gateway[0] != 0) memcpy(nic->gateway, g_gateway, 4);
+    if (g_subnet[0]  != 0) memcpy(nic->subnet,     g_subnet, 4);
+    if (g_gateway[0] != 0) memcpy(nic->gateway,    g_gateway, 4);
+    if (g_dns[0]     != 0) memcpy(nic->dns_server, g_dns,     4);
 
     g_state = DHCP_STATE_BOUND;
     kprintf("DHCP: bound to %d.%d.%d.%d\n",
