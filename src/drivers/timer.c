@@ -2,10 +2,15 @@
 #include "../include/ports.h"
 #include "../lib/stdio.h"
 
+// Network polling (e1000 RX)
+#include "net/e1000.h"
+
 uint64_t system_ticks = 0;
 
 void timer_handler() {
     system_ticks++;
+    // Poll NIC at ~62 Hz (every 16ms) to avoid ISR overhead at 1000 Hz.
+    if ((system_ticks & 15) == 0) e1000_poll();
 }
 
 void timer_init(uint32_t freq) {

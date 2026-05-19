@@ -86,8 +86,27 @@ void pmm_init(void* mb_info) {
                 if (addr >= (uint64_t)bitmap && addr < (uint64_t)bitmap + bitmap_size) continue;
 
                 uint64_t page_index = addr / PAGE_SIZE;
-                bitmap[page_index / 8] &= ~(1 << (page_index % 8)); // Mark Free
+                bitmap[page_index / 8] &= ~(1u << (page_index % 8)); // Mark Free
                 usable_ram += PAGE_SIZE;
+            }
+        }
+    }
+
+    // 5. Mark module pages as USED so the heap never clobbers initrd data.
+    //    This is critical: large modules (e.g. background.bmp at 2.3 MB) can
+    //    extend above the 4 MB BUMP_MEM line and would otherwise be silently
+    //    overwritten when the heap allocates those pages.
+    for (tag = (struct multiboot_tag*)((uint8_t*)mb_info + 8);
+         tag->type != MULTIBOOT_TAG_TYPE_END;
+         tag = (struct multiboot_tag*)((uint8_t*)tag + ((tag->size + 7) & ~7))) {
+        if (tag->type == MULTIBOOT_TAG_TYPE_MODULE) {
+            struct multiboot_tag_module* mod = (struct multiboot_tag_module*)tag;
+            uint64_t mstart = mod->mod_start & ~(uint64_t)(PAGE_SIZE - 1);
+            uint64_t mend   = (mod->mod_end + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+            for (uint64_t addr = mstart; addr < mend; addr += PAGE_SIZE) {
+                uint64_t idx = addr / PAGE_SIZE;
+                if (idx < max_pages)
+                    bitmap[idx / 8] |= (1u << (idx % 8)); // mark used
             }
         }
     }
@@ -99,8 +118,8 @@ void pmm_init(void* mb_info) {
 void* pmm_alloc() {
     // Start loop from a higher index to avoid low memory addresses
     for (uint64_t i = 1024; i < max_pages; i++) {
-        if (!(bitmap[i / 8] & (1 << (i % 8)))) {
-            bitmap[i / 8] |= (1 << (i % 8));
+        if (!(bitmap[i / 8] & (1u << (i % 8)))) {
+            bitmap[i / 8] |= (1u << (i % 8));
             return (void*)(i * PAGE_SIZE);
         }
     }
@@ -110,5 +129,5 @@ void* pmm_alloc() {
 
 void pmm_free(void* ptr) {
     uint64_t page_index = (uint64_t)ptr / PAGE_SIZE;
-    bitmap[page_index / 8] &= ~(1 << (page_index % 8));
+    bitmap[page_index / 8] &= ~(1u << (page_index % 8));
 }

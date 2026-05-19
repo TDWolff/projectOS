@@ -7,5 +7,5 @@ username=User
 system=ProjectOS Sahara
 show_clock=1
 show_seconds=1
-timezone=-8
+timezone=-7
 clock_pos=right

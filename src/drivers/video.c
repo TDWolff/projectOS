@@ -8,6 +8,7 @@
 #include "shell.h"
 #include "compositor.h"
 #include "bmp.h"
+#include "png.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -32,6 +33,10 @@ static uint32_t* get_draw_buffer() {
     uint32_t* bb = (uint32_t*)compositor_get_backbuffer();
     if (bb) return bb;
     return fb_addr;
+}
+
+uint32_t* video_get_draw_target(void) {
+    return get_draw_buffer();
 }
 
 static font_t loaded_font = {0};
@@ -167,9 +172,9 @@ void video_init(void* mb_info) {
         // video_init is called after heap_init in kernel.c
         compositor_init(fb_width, fb_height, fb_pitch);
         
-        // Load Background Wallpaper
-        // Mode 1: Scale to Fit (Fills screen, crops edges)
-        bmp_draw("background.bmp", 0, 0, 0);
+        // PNG preferred, BMP fallback — both use mode 1 (scale-to-fill, centred)
+        if (!png_draw("background.png", 0, 0, 1))
+            bmp_draw("background.bmp", 0, 0, 1);
     }
 
     if (!fb_addr) return;
@@ -265,16 +270,9 @@ void kprint(const char* str) {
 
 void terminal_clear() {
     if (!fb_addr) return;
-    
-    // Check if we are using wallpaper or a solid color
-    // For now, let's just clear to the desktop color, OR we should repaint wallpaper
-    // But since we are likely in a windowed mode, terminal_clear might not be the right metaphor
-    // used globally.
-    // draw_rect(0, 0, fb_width, fb_height, bg_color);
-    
-    // Position cursor at shell window start
-    cursor_x = 205; 
-    cursor_y = 185;
+    draw_rect(0, 0, fb_width, fb_height, bg_color);
+    cursor_x = 0;
+    cursor_y = 0;
 }
 
 void terminal_set_bg(uint32_t color) {

@@ -22,7 +22,7 @@ void heap_init() {
         void* next = pmm_alloc();
         if ((uint64_t)next != (uint64_t)heap_start + (i * 4096)) {
              kprintf("Heap Panic: Non-contiguous memory allocated at index %d\n", i);
-             return;
+             while(1);
         }
     }
 
@@ -69,13 +69,26 @@ void* kmalloc(uint64_t size) {
 void kfree(void* ptr) {
     if (!ptr) return;
 
-    // Move the pointer back to find the header
     heap_node_t* node = (heap_node_t*)((uint8_t*)ptr - sizeof(heap_node_t));
     node->is_free = 1;
 
-    // Simple Coalescing: merge with next block if it is also free
+    // Forward coalesce: merge with the next block if free.
     if (node->next && node->next->is_free) {
         node->size += node->next->size + sizeof(heap_node_t);
         node->next = node->next->next;
+    }
+
+    // Backward coalesce: find the block immediately before this one and
+    // merge into it if it's free. Without this, repeated alloc/free cycles
+    // fragment the heap into unusable small blocks.
+    heap_node_t* prev = 0;
+    heap_node_t* cur = head;
+    while (cur && cur != node) {
+        prev = cur;
+        cur = cur->next;
+    }
+    if (prev && prev->is_free) {
+        prev->size += node->size + sizeof(heap_node_t);
+        prev->next = node->next;
     }
 }

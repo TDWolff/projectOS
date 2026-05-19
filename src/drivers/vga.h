@@ -27,6 +27,8 @@ uint32_t video_get_pixel(int x, int y);
 
 // Direct Buffer Targeting (For Compositor)
 void video_set_subsystem_target(uint32_t* target);
+// Returns the current draw target (backbuffer during compositing, canvas otherwise).
+uint32_t* video_get_draw_target(void);
 
 // Framebuffer Info for User Space
 typedef struct {

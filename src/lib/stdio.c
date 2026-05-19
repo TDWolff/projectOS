@@ -60,22 +60,22 @@ void kprintf(const char* format, ...) {
             }
             case 's': {
                 const char* s = va_arg(args, const char*);
-                kprint(s);
+                // kprint(s);
                 break;
             }
             case 'd': {
                 int64_t d = va_arg(args, int64_t);
                 char buffer[32];
                 itoa(d, buffer, 10);
-                kprint(buffer);
+                // kprint(buffer);
                 break;
             }
             case 'x': {
                 uint64_t x = va_arg(args, uint64_t);
                 char buffer[32];
                 itoa(x, buffer, 16);
-                kprint("0x");
-                kprint(buffer);
+                // kprint("0x");
+                // kprint(buffer);
                 break;
             }
             default:

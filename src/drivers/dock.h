@@ -20,9 +20,10 @@ typedef struct dock_app_t {
     bool background;
 
     // runtime/icon cache
-    uint32_t* icon_rgba; // ARGB or XRGB; matches putpixel format
+    uint32_t* icon_rgba;    // raw decoded pixels (original size)
     int icon_w;
     int icon_h;
+    uint32_t* icon_scaled;  // pre-scaled to DOCK_ICON_SIZE × DOCK_ICON_SIZE, built once on load
 
     struct dock_app_t* next;
 } dock_app_t;

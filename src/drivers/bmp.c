@@ -31,7 +31,7 @@ void bmp_draw(const char* filename, int x, int y, int mode) {
     // 1. Find file in memory
     file_t* file = initrd_open(filename);
     if (!file) {
-        kprintf("BMP Error: File '%s' not found.\n", filename);
+        // // // kprintf("BMP Error: File '%s' not found.\n", filename);
         return;
     }
 
@@ -40,7 +40,7 @@ void bmp_draw(const char* filename, int x, int y, int mode) {
     
     // 2. Validate Helper
     if (file_header->type != 0x4D42) { // 0x4D42 is 'BM' in little endian
-        kprintf("BMP Error: Not a valid BMP signature.\n");
+        // kprintf("BMP Error: Not a valid BMP signature.\n");
         return;
     }
 
@@ -48,7 +48,7 @@ void bmp_draw(const char* filename, int x, int y, int mode) {
     
     // We basically only support 24-bit RGB and 32-bit RGBA, no compression (0) or BITFIELDS (3)
     if (info_header->compression != 0 && info_header->compression != 3) {
-        kprintf("BMP Error: Compressed BMPs not supported yet.\n");
+        // kprintf("BMP Error: Compressed BMPs not supported yet.\n");
         return;
     }
     
@@ -59,7 +59,7 @@ void bmp_draw(const char* filename, int x, int y, int mode) {
     int bpp = info_header->bits / 8;
     
     if (bpp != 3 && bpp != 4) {
-        kprintf("BMP Error: Only 24-bit or 32-bit depths supported.\n");
+        // kprintf("BMP Error: Only 24-bit or 32-bit depths supported.\n");
         return;
     }
 
