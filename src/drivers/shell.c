@@ -521,6 +521,33 @@ static int buffer_idx = 0;
 static char g_pending_command[MAX_COMMAND_LEN];
 static bool g_command_ready = false;
 
+// --- Command history ---
+#define HISTORY_MAX 32
+static char g_history[HISTORY_MAX][MAX_COMMAND_LEN];
+static int  g_history_count = 0;
+static int  g_history_head  = 0;
+static int  g_history_pos   = -1;   // -1 = not browsing
+static char g_history_saved[MAX_COMMAND_LEN]; // saved buffer on first Up press
+
+static void history_push(const char* cmd) {
+    if (!cmd || !cmd[0]) return;
+    if (g_history_count > 0) {
+        int last = (g_history_head - 1 + HISTORY_MAX) % HISTORY_MAX;
+        if (strcmp(g_history[last], cmd) == 0) return; // no duplicate
+    }
+    int i = 0;
+    while (cmd[i] && i < MAX_COMMAND_LEN - 1) { g_history[g_history_head][i] = cmd[i]; i++; }
+    g_history[g_history_head][i] = 0;
+    g_history_head = (g_history_head + 1) % HISTORY_MAX;
+    if (g_history_count < HISTORY_MAX) g_history_count++;
+}
+
+static const char* history_get(int offset) {
+    if (offset < 0 || offset >= g_history_count) return 0;
+    int idx = (g_history_head - 1 - offset + HISTORY_MAX * 2) % HISTORY_MAX;
+    return g_history[idx];
+}
+
 bool shell_is_interrupted(void) {
     if (!g_shell_interrupted) return false;
     g_shell_interrupted = false;
@@ -1176,6 +1203,130 @@ void execute_command(char* input) {
     // // kprintf("\nroot %% "); // Print prompt with newline for next line
 }
 
+// --- Tab completion + history navigation helpers ---
+
+static int g_esc_state = 0; // 0=normal 1=got ESC 2=got ESC+[
+
+static const char* g_builtin_cmds[] = {
+    "help", "ls", "cat", "pfs", "nettest", "netif", "netdevice",
+    "ping", "nslookup", "wget", "clear", "run", "nano", "vim", "cd",
+    0
+};
+
+static bool sh_prefix_match(const char* s, const char* prefix, int plen) {
+    for (int i = 0; i < plen; i++) {
+        if (!s[i] || s[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+static void history_navigate(int delta) {
+    if (g_history_count == 0) return;
+
+    // Save current buffer before entering browse mode
+    if (g_history_pos == -1 && delta > 0)
+        memcpy(g_history_saved, command_buffer, MAX_COMMAND_LEN);
+
+    int new_pos = g_history_pos + delta;
+
+    // Past newest: restore saved buffer
+    if (new_pos < 0) {
+        for (int i = 0; i < buffer_idx; i++) shell_out_char('\b');
+        memcpy(command_buffer, g_history_saved, MAX_COMMAND_LEN);
+        buffer_idx = (int)strlen(command_buffer);
+        for (int i = 0; i < buffer_idx; i++) shell_out_char(command_buffer[i]);
+        g_history_pos = -1;
+        return;
+    }
+    if (new_pos >= g_history_count) return; // can't go further back
+
+    const char* entry = history_get(new_pos);
+    if (!entry) return;
+
+    for (int i = 0; i < buffer_idx; i++) shell_out_char('\b');
+    g_history_pos = new_pos;
+    int i = 0;
+    while (entry[i] && i < MAX_COMMAND_LEN - 1) { command_buffer[i] = entry[i]; i++; }
+    command_buffer[i] = 0;
+    buffer_idx = i;
+    for (int j = 0; j < buffer_idx; j++) shell_out_char(command_buffer[j]);
+}
+
+#define TAB_MAX_MATCHES 32
+
+static void shell_do_tab_complete(void) {
+    // Find the start of the last word in the buffer
+    int word_start = 0;
+    for (int i = 0; i < buffer_idx; i++)
+        if (command_buffer[i] == ' ') word_start = i + 1;
+
+    const char* prefix = command_buffer + word_start;
+    int plen = buffer_idx - word_start;
+    bool completing_cmd = (word_start == 0);
+
+    const char* matches[TAB_MAX_MATCHES];
+    int nmatch = 0;
+
+    if (completing_cmd) {
+        for (int i = 0; g_builtin_cmds[i] && nmatch < TAB_MAX_MATCHES; i++) {
+            if (sh_prefix_match(g_builtin_cmds[i], prefix, plen))
+                matches[nmatch++] = g_builtin_cmds[i];
+        }
+    }
+
+    // Always add initrd file matches (useful for cat/run/nano args)
+    file_t* files = initrd_get_files();
+    for (int i = 0; i < MAX_FILES && nmatch < TAB_MAX_MATCHES; i++) {
+        if (!files[i].exists) continue;
+        if (is_file_protected(files[i].name)) continue;
+        if (sh_prefix_match(files[i].name, prefix, plen))
+            matches[nmatch++] = files[i].name;
+    }
+
+    if (nmatch == 0) return;
+
+    if (nmatch == 1) {
+        // Complete the unique match
+        const char* rest = matches[0] + plen;
+        while (*rest && buffer_idx < MAX_COMMAND_LEN - 1) {
+            command_buffer[buffer_idx++] = *rest;
+            shell_out_char(*rest);
+            rest++;
+        }
+        // Append space after a completed command name
+        if (completing_cmd && buffer_idx < MAX_COMMAND_LEN - 1) {
+            command_buffer[buffer_idx++] = ' ';
+            shell_out_char(' ');
+        }
+        return;
+    }
+
+    // Multiple matches: extend by longest common prefix, then list if stuck
+    int lcp = (int)strlen(matches[0]) - plen;
+    for (int i = 1; i < nmatch && lcp > 0; i++) {
+        int ml = (int)strlen(matches[i]) - plen;
+        if (ml < lcp) lcp = ml;
+        for (int j = 0; j < lcp; j++) {
+            if (matches[0][plen + j] != matches[i][plen + j]) { lcp = j; break; }
+        }
+    }
+
+    for (int j = 0; j < lcp && buffer_idx < MAX_COMMAND_LEN - 1; j++) {
+        char ch = matches[0][plen + j];
+        command_buffer[buffer_idx++] = ch;
+        shell_out_char(ch);
+    }
+
+    if (lcp == 0) {
+        // No common extension: list all candidates
+        sh_printf("\n");
+        for (int i = 0; i < nmatch; i++) { sh_printf(matches[i]); sh_printf("  "); }
+        sh_printf("\n");
+        shell_print_prompt();
+        for (int i = 0; i < buffer_idx; i++) shell_out_char(command_buffer[i]);
+    }
+}
+
 void shell_update(char c) {
     shell_check_click();
 
@@ -1185,13 +1336,28 @@ void shell_update(char c) {
         return;
     }
 
+    // Escape sequence state machine: ESC → [ → A/B/C/D
+    if (g_esc_state == 1) {
+        if (c == '[') { g_esc_state = 2; return; }
+        g_esc_state = 0; // unexpected character after ESC — discard
+        return;
+    }
+    if (g_esc_state == 2) {
+        g_esc_state = 0;
+        if (c == 'A') { history_navigate(1);  return; } // Up   → older
+        if (c == 'B') { history_navigate(-1); return; } // Down → newer
+        return; // left/right/other CSI sequences: ignore
+    }
+
+    if (c == '\x1B') { g_esc_state = 1; return; }
+    if (c == '\t')   { shell_do_tab_complete(); return; }
+
     if (c == '\x03') { // Ctrl+C
+        g_history_pos = -1;
         if (g_command_running) {
-            // Signal the running command to abort; echo ^C on the current line.
             g_shell_interrupted = true;
             sh_printf("^C\n");
         } else {
-            // Idle at prompt: discard current input and reprint the prompt.
             memset(command_buffer, 0, MAX_COMMAND_LEN);
             buffer_idx = 0;
             sh_printf("^C\n");
@@ -1202,6 +1368,8 @@ void shell_update(char c) {
 
     if (c == '\n') {
         command_buffer[buffer_idx] = '\0';
+        history_push(command_buffer);
+        g_history_pos = -1;
         sh_printf("\n");
         // Don't run the command here — we're inside the keyboard ISR with
         // interrupts disabled (interrupt gate 0x8E). Queue it for the main
@@ -1216,13 +1384,11 @@ void shell_update(char c) {
         if (buffer_idx > 0) {
             buffer_idx--;
             command_buffer[buffer_idx] = 0;
-            // // kprint_char('\b');
             shell_out_char('\b');
         }
     } else {
         if (buffer_idx < MAX_COMMAND_LEN - 1) {
             command_buffer[buffer_idx++] = c;
-            // // kprint_char(c);
             shell_out_char(c);
         }
     }
