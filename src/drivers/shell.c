@@ -22,12 +22,87 @@
 #include "../net/icmp.h"
 #include "../net/dns.h"
 #include "../net/tcp.h"
+#include "../net/tls.h"
 #include "../drivers/net/e1000.h"
 #include "timer.h"
+#include "editor.h"
+
+// Ctrl+C interrupt flag. Set by the keyboard ISR, polled by long-running
+// commands. Volatile prevents the compiler caching it in a register.
+static volatile bool g_shell_interrupted = false;
+static volatile bool g_command_running   = false;
 
 // Shell output sink: lets the windowed terminal display shell I/O.
 static void (*g_shell_putc)(char c, void* user) = 0;
 static void* g_shell_putc_user = 0;
+
+// Raw keyboard hook: when set, keyboard chars bypass the shell command buffer.
+static void (*g_input_handler)(char c, void* user) = 0;
+static void* g_input_handler_user = 0;
+
+// Terminal grid dimensions (populated by dock when it creates the terminal window).
+static int g_term_rows = 24;
+static int g_term_cols = 80;
+
+// Current working directory. Only "/" (initrd, read-only) and "/user" (FAT32)
+// are valid. Defaults to /user since that's the only writable location.
+static char g_cwd[128] = "/user";
+
+const char* shell_get_cwd(void) { return g_cwd; }
+
+// Normalize an absolute path in-place: collapse . and .. components.
+static void path_normalize(char* path) {
+    // Component stack stored as a single flat buffer; we track segment starts.
+    char buf[128];
+    int segs[16];   // start index of each segment in buf (after its leading /)
+    int nseg = 0;
+    int bi   = 0;
+
+    int i = 1; // skip leading /
+    while (path[i]) {
+        // skip consecutive slashes
+        while (path[i] == '/') i++;
+        if (!path[i]) break;
+        // read component
+        int start = i;
+        while (path[i] && path[i] != '/') i++;
+        int len = i - start;
+        if (len == 1 && path[start] == '.') {
+            continue; // . = current dir, skip
+        } else if (len == 2 && path[start] == '.' && path[start+1] == '.') {
+            if (nseg > 0) { bi = segs[--nseg]; } // pop last segment
+        } else {
+            if (bi < 126 - len) {
+                segs[nseg < 16 ? nseg++ : nseg-1] = bi;
+                buf[bi++] = '/';
+                for (int j = 0; j < len; j++) buf[bi++] = path[start + j];
+            }
+        }
+    }
+    buf[bi] = 0;
+    if (bi == 0) { path[0] = '/'; path[1] = 0; return; }
+    int j = 0; while (buf[j]) { path[j] = buf[j]; j++; } path[j] = 0;
+}
+
+// Resolve a user-supplied path against the CWD, then normalize . and ..
+static void shell_resolve_path(const char* in, char* out, int outsz) {
+    if (in[0] == '/') {
+        int i = 0;
+        while (in[i] && i < outsz - 1) { out[i] = in[i]; i++; }
+        out[i] = 0;
+    } else {
+        int ci = 0;
+        while (g_cwd[ci] && ci < outsz - 1) { out[ci] = g_cwd[ci]; ci++; }
+        if (ci < outsz - 1 && (ci == 0 || out[ci-1] != '/')) out[ci++] = '/';
+        int ii = 0;
+        while (in[ii] && ci < outsz - 1) { out[ci++] = in[ii++]; }
+        out[ci] = 0;
+    }
+    path_normalize(out);
+    // Remove trailing slash unless root
+    int len = 0; while (out[len]) len++;
+    if (len > 1 && out[len-1] == '/') out[len-1] = 0;
+}
 
 void shell_set_output_sink(void (*putc_cb)(char c, void* user), void* user) {
     g_shell_putc = putc_cb;
@@ -79,14 +154,31 @@ void sh_printf(const char* fmt, ...) {
     __builtin_va_end(ap);
 }
 
+void shell_set_input_handler(void (*handler)(char c, void* user), void* user) {
+    g_input_handler      = handler;
+    g_input_handler_user = user;
+}
+
+void shell_set_term_size(int rows, int cols) {
+    if (rows > 0) g_term_rows = rows;
+    if (cols > 0) g_term_cols = cols;
+}
+
+void shell_get_term_size(int* rows, int* cols) {
+    if (rows) *rows = g_term_rows;
+    if (cols) *cols = g_term_cols;
+}
+
 void shell_out_str(const char* s) {
     sh_printf("%s", s);
 }
 
 void shell_print_prompt() {
     const char* username = settings_get("username");
-    if (!username || !username[0]) username = "root";
+    if (!username || !username[0]) username = "User";
     sh_printf(username);
+    sh_printf(" ");
+    sh_printf(g_cwd);
     sh_printf(" % ");
 }
 
@@ -128,28 +220,121 @@ static bool is_file_protected(const char* name) {
     return false;
 }
 
-// --- /user listing helpers ---
+// --- ls flags and listing helpers ---
 
-static int g_ls_user_count = 0;
+typedef struct {
+    int  count;
+    bool show_all;  // -a: show protected files
+    bool long_fmt;  // -l: show size column
+    bool human;     // -h: human-readable sizes (implies -l)
+} ls_ctx_t;
 
-static bool shell_pfs_ls_cb(const char* name, bool is_dir, void* user) {
-    (void)user;
+// Print s left-justified in a field of `width` chars.
+static void sh_print_field(const char* s, int width) {
+    int i = 0;
+    for (; s[i] && i < width; i++) sh_putc(s[i]);
+    for (; i < width; i++) sh_putc(' ');
+}
+
+// Print uint32 right-justified in a field of `width` chars.
+static void sh_print_uint_field(uint32_t v, int width) {
+    char buf[12];
+    int len = 0;
+    if (v == 0) { buf[len++] = '0'; }
+    else { uint32_t tmp = v; while (tmp) { buf[len++] = (char)('0' + tmp % 10); tmp /= 10; } }
+    // buf is reversed; pad first, then emit in reverse
+    int pad = width - len;
+    while (pad-- > 0) sh_putc(' ');
+    while (len-- > 0) sh_putc(buf[len]);
+}
+
+// Human-readable size: "1023 B", "12 K", "3 M"
+static void sh_print_size_human(uint32_t sz) {
+    if (sz >= 1024 * 1024) {
+        sh_print_uint_field(sz / (1024 * 1024), 4);
+        sh_printf(" M");
+    } else if (sz >= 1024) {
+        sh_print_uint_field(sz / 1024, 4);
+        sh_printf(" K");
+    } else {
+        sh_print_uint_field(sz, 4);
+        sh_printf(" B");
+    }
+}
+
+static bool shell_pfs_ls_info_cb(const char* name, bool is_dir, uint32_t size, void* user) {
+    ls_ctx_t* ctx = (ls_ctx_t*)user;
     if (!name || !name[0]) return true;
-    if (is_file_protected(name)) return true;
+    if (!ctx->show_all && is_file_protected(name)) return true;
 
     sh_printf("  ");
-    sh_printf(name);
-    if (is_dir) sh_printf("/");
+    if (ctx->long_fmt || ctx->human) {
+        // name in 24-char field, then size
+        char namebuf[28];
+        int ni = 0;
+        while (name[ni] && ni < 23) { namebuf[ni] = name[ni]; ni++; }
+        if (is_dir && ni < 24) namebuf[ni++] = '/';
+        namebuf[ni] = 0;
+        sh_print_field(namebuf, 24);
+        sh_printf("  ");
+        if (is_dir) {
+            sh_printf("        -");
+        } else if (ctx->human) {
+            sh_print_size_human(size);
+        } else {
+            sh_print_uint_field(size, 9);
+        }
+    } else {
+        sh_printf(name);
+        if (is_dir) sh_printf("/");
+    }
     sh_printf("\n");
-    g_ls_user_count++;
+    ctx->count++;
     return true;
 }
 
-static bool shell_ls_user_root() {
-    g_ls_user_count = 0;
-    if (!pfs_list_user_root_long(shell_pfs_ls_cb, 0)) return false;
-    if (g_ls_user_count == 0) sh_printf("  (empty)\n");
+// Adapter from long-name callback (no size) to info callback
+static bool shell_pfs_ls_long_cb(const char* name, bool is_dir, void* user) {
+    return shell_pfs_ls_info_cb(name, is_dir, 0, user);
+}
+
+static bool shell_ls_user_root(ls_ctx_t* ctx) {
+    ctx->count = 0;
+    // Use info callback (with size) when long format is requested, plain otherwise.
+    bool ok;
+    if (ctx->long_fmt || ctx->human) {
+        ok = pfs_list_user_root_info(shell_pfs_ls_info_cb, ctx);
+    } else {
+        ok = pfs_list_user_root_long(shell_pfs_ls_long_cb, ctx);
+    }
+    if (!ok) return false;
+    if (ctx->count == 0) sh_printf("  (empty)\n");
     return true;
+}
+
+// Parse flags and optional path from everything after "ls" (may start with space or be empty).
+static void ls_parse_args(const char* arg, ls_ctx_t* ctx, char* path_out, int path_sz) {
+    path_out[0] = 0;
+    while (*arg == ' ') arg++;
+    while (*arg) {
+        while (*arg == ' ') arg++;
+        if (!*arg) break;
+        if (*arg == '-') {
+            arg++;
+            while (*arg && *arg != ' ') {
+                if (*arg == 'a') ctx->show_all = true;
+                else if (*arg == 'l') ctx->long_fmt = true;
+                else if (*arg == 'h') { ctx->human = true; ctx->long_fmt = true; }
+                arg++;
+            }
+        } else {
+            // path token (take first one)
+            int i = 0;
+            while (*arg && *arg != ' ' && i < path_sz - 1) { path_out[i++] = *arg++; }
+            path_out[i] = 0;
+            while (*arg && *arg != ' ') arg++;
+        }
+    }
 }
 
 // --- tiny formatting helpers (shell output sink only) ----------------------
@@ -238,8 +423,9 @@ static int32_t shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic, 
     if (!arp_resolve(nexthop_ip, dest_mac)) {
         arp_lookup(nexthop_ip, nic);
         __asm__ volatile("sti");
-        uint64_t deadline = get_ticks() + 200; // 2 seconds at 100 Hz
+        uint64_t deadline = get_ticks() + 2000; // 2 seconds at 1000 Hz
         while (get_ticks() < deadline) {
+            if (g_shell_interrupted) { __asm__ volatile("cli"); return -1; }
             e1000_poll();
             if (arp_resolve(nexthop_ip, dest_mac)) break;
             __asm__ volatile("pause");
@@ -298,8 +484,9 @@ static int32_t shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic, 
     bool got_reply = false;
     __asm__ volatile("sti");
     uint64_t start    = get_ticks();
-    uint64_t deadline = start + 400; // 4 seconds at 100 Hz
+    uint64_t deadline = start + 4000; // 4 seconds at 1000 Hz
     while (get_ticks() < deadline) {
+        if (g_shell_interrupted) break;
         e1000_poll();
         if (icmp_selftest_wait_for_echo_reply(ident_be, seq_be, 1)) {
             got_reply = true;
@@ -309,9 +496,10 @@ static int32_t shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic, 
     }
     uint64_t end = get_ticks();
     __asm__ volatile("cli");
+    if (g_shell_interrupted) return -1;
 
     if (got_reply) {
-        uint32_t ms  = (uint32_t)((end - start) * 10); // 100 Hz → 10 ms/tick
+        uint32_t ms  = (uint32_t)(end - start); // 1000 Hz → 1 ms/tick
         uint8_t  ttl = icmp_selftest_get_ttl();
         sh_printf("%d bytes from ", (int)(sizeof(icmp_header_t) + payload_len));
         sh_print_ip4(target_ip);
@@ -333,6 +521,12 @@ static int buffer_idx = 0;
 static char g_pending_command[MAX_COMMAND_LEN];
 static bool g_command_ready = false;
 
+bool shell_is_interrupted(void) {
+    if (!g_shell_interrupted) return false;
+    g_shell_interrupted = false;
+    return true;
+}
+
 // Forward declaration — defined later in this file.
 void execute_command(char* input);
 
@@ -340,8 +534,12 @@ bool shell_has_pending_command(void) { return g_command_ready; }
 
 void shell_run_pending_command(void) {
     if (!g_command_ready) return;
-    g_command_ready = false;
+    g_command_ready      = false;
+    g_shell_interrupted  = false;
+    g_command_running    = true;
     execute_command(g_pending_command);
+    g_command_running    = false;
+    g_shell_interrupted  = false;
     shell_print_prompt();
 }
 
@@ -384,7 +582,7 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip|host>, nslookup <host>, wget <url>, clear, run <program>\n");
+    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip|host>, nslookup <host>, wget <url>, clear, run <program>, nano <file>, vim <file>\n");
     sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
     sh_printf("  - pfs: shows persistence (/user) mount status\n");
     sh_printf("  - netif: lists network interfaces\n");
@@ -424,7 +622,9 @@ void execute_command(char* input) {
                 uint32_t min_ms = 0xFFFFFFFFu, max_ms = 0, total_ms = 0;
 
                 for (int seq = 1; seq <= 4; seq++) {
+                    if (g_shell_interrupted) goto ping_done;
                     int32_t ms = shell_ping_once(target, nic, (uint16_t)seq);
+                    if (g_shell_interrupted) goto ping_done;
                     sent++;
                     if (ms >= 0) {
                         received++;
@@ -433,11 +633,15 @@ void execute_command(char* input) {
                         if (ums > max_ms) max_ms = ums;
                         total_ms += ums;
                     }
-                    // ~1 second between pings (100 ticks at 100 Hz)
+                    // ~1 second between pings (1000 ticks at 1000 Hz)
                     if (seq < 4) {
                         __asm__ volatile("sti");
-                        uint64_t wait = get_ticks() + 100;
-                        while (get_ticks() < wait) { e1000_poll(); __asm__ volatile("pause"); }
+                        uint64_t wait = get_ticks() + 1000;
+                        while (get_ticks() < wait) {
+                            if (g_shell_interrupted) { __asm__ volatile("cli"); goto ping_done; }
+                            e1000_poll();
+                            __asm__ volatile("pause");
+                        }
                         __asm__ volatile("cli");
                     }
                 }
@@ -493,13 +697,24 @@ void execute_command(char* input) {
     else if (input[0]=='w' && input[1]=='g' && input[2]=='e' && input[3]=='t' && input[4]==' ') {
         const char* url = input + 5;
 
-        // --- parse http://hostname/path ---
-        if (url[0]!='h' || url[1]!='t' || url[2]!='t' || url[3]!='p' ||
-            url[4]!=':' || url[5]!='/' || url[6]!='/') {
-            sh_printf("wget: only http:// URLs supported\n");
+        // --- detect scheme ---
+        bool use_tls = false;
+        const char* after_scheme;
+        // check https://
+        if (url[0]=='h' && url[1]=='t' && url[2]=='t' && url[3]=='p' &&
+            url[4]=='s' && url[5]==':' && url[6]=='/' && url[7]=='/') {
+            use_tls = true;
+            after_scheme = url + 8;
+        } else if (url[0]=='h' && url[1]=='t' && url[2]=='t' && url[3]=='p' &&
+                   url[4]==':' && url[5]=='/' && url[6]=='/') {
+            use_tls = false;
+            after_scheme = url + 7;
+        } else {
+            sh_printf("wget: only http:// and https:// URLs are supported\n");
             goto wget_done;
         }
-        const char* host_start = url + 7;
+
+        const char* host_start = after_scheme;
         const char* host_end   = host_start;
         while (*host_end && *host_end != '/') host_end++;
 
@@ -528,7 +743,7 @@ void execute_command(char* input) {
             goto wget_done;
         }
 
-        // --- resolve hostname (or parse as IP) ---
+        // --- resolve hostname ---
         uint8_t remote_ip[4] = {0};
         if (!parse_ip4(hostname, remote_ip)) {
             sh_printf("Resolving %s...\n", hostname);
@@ -538,14 +753,10 @@ void execute_command(char* input) {
             }
         }
 
+        uint16_t port = use_tls ? 443 : 80;
         sh_printf("Connecting to %s (", hostname);
         sh_print_ip4(remote_ip);
-        sh_printf("):80...\n");
-
-        // --- TCP connect ---
-        tcp_conn_t* conn = tcp_connect(remote_ip, 80, nic);
-        if (!conn) { sh_printf("wget: connection refused or timed out\n"); goto wget_done; }
-        sh_printf("Connected.\n");
+        sh_printf("):%d%s...\n", (int)port, use_tls ? " [TLS]" : "");
 
         // --- build HTTP/1.0 GET request ---
         char req[512];
@@ -559,41 +770,78 @@ void execute_command(char* input) {
              *s && rlen<511; s++) req[rlen++] = *s;
         req[rlen] = 0;
 
-        tcp_send(conn, (uint8_t*)req, (uint32_t)rlen);
-
-        // --- stream response to terminal ---
-        sh_printf("---\n");
-        uint32_t total   = 0;
+        uint32_t total = 0;
         uint8_t  rbuf[256];
-
         __asm__ volatile("sti");
-        uint64_t deadline   = get_ticks() + 1000; // 10s hard limit
-        uint64_t idle_since = get_ticks();
 
-        while (1) {
-            e1000_poll();
+        if (use_tls) {
+            // --- HTTPS path ---
+            tls_conn_t* tconn = tls_connect(hostname, remote_ip, port, nic);
+            if (!tconn) { sh_printf("wget: TLS handshake failed\n"); __asm__ volatile("cli"); goto wget_done; }
+            sh_printf("Connected (TLS).\n");
 
-            uint32_t n = tcp_recv(conn, rbuf, sizeof(rbuf));
-            if (n > 0) {
-                for (uint32_t i = 0; i < n; i++) sh_putc((char)rbuf[i]);
-                total     += n;
-                idle_since = get_ticks();
-                deadline   = get_ticks() + 1000; // reset hard limit on activity
+            tls_send(tconn, (uint8_t*)req, (uint32_t)rlen);
+
+            sh_printf("---\n");
+            uint64_t deadline   = get_ticks() + 15000;
+            uint64_t idle_since = get_ticks();
+
+            while (1) {
+                int n = tls_recv(tconn, rbuf, sizeof(rbuf));
+                if (n > 0) {
+                    for (int i = 0; i < n; i++) sh_putc((char)rbuf[i]);
+                    total     += (uint32_t)n;
+                    idle_since = get_ticks();
+                    deadline   = get_ticks() + 15000;
+                } else if (n == 0) {
+                    break; // clean close
+                } else {
+                    break; // error
+                }
+
+                if (shell_is_interrupted()) { sh_printf("\nInterrupted.\n"); break; }
+                uint64_t now = get_ticks();
+                if (now >= deadline) break;
+                if (now - idle_since > 5000) break;
+                __asm__ volatile("pause");
             }
 
-            if (tcp_is_done(conn)) break;
+            tls_close(tconn);
+        } else {
+            // --- HTTP path ---
+            tcp_conn_t* conn = tcp_connect(remote_ip, port, nic);
+            if (!conn) { sh_printf("wget: connection refused or timed out\n"); __asm__ volatile("cli"); goto wget_done; }
+            sh_printf("Connected.\n");
 
-            uint64_t now = get_ticks();
-            if (now >= deadline) break;
-            if (now - idle_since > 300) break; // 3s idle = server done sending
-            __asm__ volatile("pause");
+            tcp_send(conn, (uint8_t*)req, (uint32_t)rlen);
+
+            sh_printf("---\n");
+            uint64_t deadline   = get_ticks() + 10000;
+            uint64_t idle_since = get_ticks();
+
+            while (1) {
+                e1000_poll();
+                uint32_t n = tcp_recv(conn, rbuf, sizeof(rbuf));
+                if (n > 0) {
+                    for (uint32_t i = 0; i < n; i++) sh_putc((char)rbuf[i]);
+                    total     += n;
+                    idle_since = get_ticks();
+                    deadline   = get_ticks() + 10000;
+                }
+                if (tcp_is_done(conn)) break;
+                if (shell_is_interrupted()) { sh_printf("\nInterrupted.\n"); break; }
+                uint64_t now = get_ticks();
+                if (now >= deadline) break;
+                if (now - idle_since > 3000) break;
+                __asm__ volatile("pause");
+            }
+
+            tcp_close(conn);
+            tcp_free(conn);
         }
+
         __asm__ volatile("cli");
-
         sh_printf("\n---\n%d bytes received.\n", (int)total);
-
-        tcp_close(conn);
-        tcp_free(conn);
         wget_done:;
     }
     // PFS status
@@ -756,66 +1004,105 @@ void execute_command(char* input) {
     }
     // 2. LS (List Files)
     else if (strcmp(input, "ls") == 0 ||
-             strcmp(input, "ls /user") == 0 ||
-             strcmp(input, "ls /user/") == 0) {
-        // If listing /user, use PFS/FAT32.
-        if (strcmp(input, "ls /user") == 0 || strcmp(input, "ls /user/") == 0) {
-            sh_printf("/user:\n");
+             (input[0]=='l' && input[1]=='s' && (input[2]==0 || input[2]==' '))) {
+        ls_ctx_t ctx = { 0, false, false, false };
+        char path_arg[128];
+        path_arg[0] = 0;
+
+        // Parse flags and optional path from everything after "ls"
+        ls_parse_args(input + 2, &ctx, path_arg, (int)sizeof(path_arg));
+
+        // Determine target directory
+        char target[128];
+        if (path_arg[0]) {
+            shell_resolve_path(path_arg, target, (int)sizeof(target));
+        } else {
+            int ti = 0;
+            while (g_cwd[ti] && ti < (int)sizeof(target)-1) { target[ti] = g_cwd[ti]; ti++; }
+            target[ti] = 0;
+        }
+
+        // Normalise trailing slash
+        int tlen = 0; while (target[tlen]) tlen++;
+        if (tlen > 1 && target[tlen-1] == '/') { target[tlen-1] = 0; tlen--; }
+
+        bool is_user = (target[0]=='/' && target[1]=='u' && target[2]=='s' &&
+                        target[3]=='e' && target[4]=='r' && target[5]==0);
+        bool is_root = (target[0]=='/' && target[1]==0);
+
+        if (is_user) {
             if (!pfs_get_state() || !pfs_get_state()->user_mounted) {
                 sh_printf("  (not mounted)\n");
-                return;
-            }
-
-            if (!shell_ls_user_root()) {
+            } else if (!shell_ls_user_root(&ctx)) {
                 sh_printf("  (error reading directory)\n");
             }
-            return;
-        }
-
-        file_t* files = initrd_get_files();
-        for(int i=0; i<MAX_FILES; i++) {
-            if(files[i].exists && !is_file_protected(files[i].name)) {
-    sh_printf(files[i].name);
-    sh_printf("\n");
+        } else if (is_root) {
+            file_t* files = initrd_get_files();
+            int count = 0;
+            for (int i = 0; i < MAX_FILES; i++) {
+                if (!files[i].exists) continue;
+                if (!ctx.show_all && is_file_protected(files[i].name)) continue;
+                if (ctx.long_fmt || ctx.human) {
+                    sh_printf("  ");
+                    sh_print_field(files[i].name, 24);
+                    sh_printf("  ");
+                    if (ctx.human) {
+                        sh_print_size_human((uint32_t)files[i].size);
+                    } else {
+                        sh_print_uint_field((uint32_t)files[i].size, 9);
+                    }
+                    sh_printf("\n");
+                } else {
+                    sh_printf(files[i].name);
+                    sh_printf("\n");
+                }
+                count++;
             }
+            if (count == 0) sh_printf("  (empty)\n");
+        } else {
+            sh_printf("ls: no such directory: ");
+            sh_printf(target);
+            sh_printf("\n");
         }
     }
-    // 3. CAT (Read File) - Quick hack parsing
+    // 3. CAT (Read File)
     else if (input[0] == 'c' && input[1] == 'a' && input[2] == 't' && input[3] == ' ') {
-        char* filename = input + 4; // Skip "cat "
+        const char* arg = input + 4;
 
-        if (is_file_protected(filename)) {
+        if (is_file_protected(arg)) {
             sh_printf("Error: Access Denied (Protected File)\n");
             return;
         }
 
-        // If the user asks for /user/<file>, read using PFS.
-        if (filename[0] == '/' && filename[1] == 'u' && filename[2] == 's' && filename[3] == 'e' && filename[4] == 'r' && filename[5] == '/') {
-            uint8_t* buf = 0;
-            uint32_t sz = 0;
-            if (pfs_read_user_file(filename, &buf, &sz)) {
+        char resolved[160];
+        shell_resolve_path(arg, resolved, (int)sizeof(resolved));
+
+        // /user/<file>  → PFS read
+        bool in_user = (resolved[0]=='/' && resolved[1]=='u' && resolved[2]=='s' &&
+                        resolved[3]=='e' && resolved[4]=='r' && resolved[5]=='/');
+        if (in_user) {
+            uint8_t* buf = 0; uint32_t sz = 0;
+            if (pfs_read_user_file(resolved, &buf, &sz)) {
                 sh_printf("\n");
                 for (uint32_t i = 0; i < sz; i++) shell_out_char((char)buf[i]);
                 kfree(buf);
                 sh_printf("\n");
             } else {
-                sh_printf("File not found (or /user not mounted): ");
-                sh_printf(filename);
-                sh_printf("\n");
+                sh_printf("File not found: "); sh_printf(resolved); sh_printf("\n");
             }
         } else {
-            file_t* f = initrd_open(filename);
+            // initrd — try the bare filename portion
+            const char* bare = resolved;
+            for (int i = 0; resolved[i]; i++) if (resolved[i] == '/') bare = resolved + i + 1;
+            file_t* f = initrd_open(bare);
             if (f) {
                 sh_printf("\n");
                 char* content = (char*)f->address;
-                for(uint64_t i=0; i < f->size; i++) {
-                    shell_out_char(content[i]);
-                }
+                for (uint64_t i = 0; i < f->size; i++) shell_out_char(content[i]);
+                sh_printf("\n");
             } else {
-                sh_printf("File not found: ");
-                sh_printf(filename);
+                sh_printf("File not found: "); sh_printf(resolved); sh_printf("\n");
             }
-            sh_printf("\n"); // Newline after content for clean lines
         }
     }
     else if (strcmp(input, "clear") == 0) {
@@ -826,26 +1113,92 @@ void execute_command(char* input) {
         return;
     } 
     else if (strcmp(input, "ticks") == 0) {
-        // kprintf("\nSystem ticks: %d", get_ticks());
+        // // kprintf("\nSystem ticks: %d", get_ticks());
     }
     else if (strcmp(input, "divzero") == 0) {
-        // kprintf("\nDividing by zero...");
+        // // kprintf("\nDividing by zero...");
         volatile int a = 1;
         volatile int b = 0;
         volatile int c = a / b;
         (void)c;
     }
     else if (input[0] == 'e' && input[1] == 'c' && input[2] == 'h' && input[3] == 'o') {
-        // kprintf("\n%s", input + 5); 
+        // // kprintf("\n%s", input + 5);
+    }
+    else if (input[0]=='n' && input[1]=='a' && input[2]=='n' && input[3]=='o' && input[4]==' ') {
+        char resolved[160];
+        shell_resolve_path(input + 5, resolved, (int)sizeof(resolved));
+        if (!resolved[0]) { sh_printf("usage: nano <filename>\n"); }
+        else { editor_open_nano(resolved); }
+    }
+    else if (strcmp(input, "nano") == 0) {
+        sh_printf("usage: nano <filename>\n");
+    }
+    else if (input[0]=='v' && input[1]=='i' && input[2]=='m' && input[3]==' ') {
+        char resolved[160];
+        shell_resolve_path(input + 4, resolved, (int)sizeof(resolved));
+        if (!resolved[0]) { sh_printf("usage: vim <filename>\n"); }
+        else { editor_open_vim(resolved); }
+    }
+    else if (strcmp(input, "vim") == 0) {
+        sh_printf("usage: vim <filename>\n");
+    }
+    else if (input[0]=='c' && input[1]=='d' &&
+             (input[2]==0 || input[2]==' ' || input[2]=='.' || input[2]=='/')) {
+        // Extract argument: "cd" → home, "cd <arg>", "cd.." and "cd/path" also accepted
+        const char* arg = 0;
+        if      (input[2] == ' ') arg = input + 3;
+        else if (input[2] != 0)   arg = input + 2; // cd.. or cd/foo
+        // else arg stays 0 → cd with no arg
+
+        if (!arg || !arg[0]) {
+            // cd alone → home (/user)
+            g_cwd[0]='/'; g_cwd[1]='u'; g_cwd[2]='s';
+            g_cwd[3]='e'; g_cwd[4]='r'; g_cwd[5]=0;
+        } else {
+            char resolved[128];
+            shell_resolve_path(arg, resolved, (int)sizeof(resolved));
+            bool ok_root = (resolved[0]=='/' && resolved[1]==0);
+            bool ok_user = (resolved[0]=='/' && resolved[1]=='u' && resolved[2]=='s' &&
+                            resolved[3]=='e' && resolved[4]=='r' && resolved[5]==0);
+            if (ok_root || ok_user) {
+                int i = 0;
+                while (resolved[i] && i < (int)sizeof(g_cwd)-1) { g_cwd[i] = resolved[i]; i++; }
+                g_cwd[i] = 0;
+            } else {
+                sh_printf("cd: no such directory: "); sh_printf(resolved); sh_printf("\n");
+            }
+        }
     }
     else if (strlen(input) > 0) {
-        // kprintf("\nUnknown: %s", input);
+        // // kprintf("\nUnknown: %s", input);
     }
-    // kprintf("\nroot %% "); // Print prompt with newline for next line
+    // // kprintf("\nroot %% "); // Print prompt with newline for next line
 }
 
 void shell_update(char c) {
     shell_check_click();
+
+    // If an editor (or other raw handler) is active, forward all keys there.
+    if (g_input_handler) {
+        g_input_handler(c, g_input_handler_user);
+        return;
+    }
+
+    if (c == '\x03') { // Ctrl+C
+        if (g_command_running) {
+            // Signal the running command to abort; echo ^C on the current line.
+            g_shell_interrupted = true;
+            sh_printf("^C\n");
+        } else {
+            // Idle at prompt: discard current input and reprint the prompt.
+            memset(command_buffer, 0, MAX_COMMAND_LEN);
+            buffer_idx = 0;
+            sh_printf("^C\n");
+            shell_print_prompt();
+        }
+        return;
+    }
 
     if (c == '\n') {
         command_buffer[buffer_idx] = '\0';
@@ -863,13 +1216,13 @@ void shell_update(char c) {
         if (buffer_idx > 0) {
             buffer_idx--;
             command_buffer[buffer_idx] = 0;
-            // kprint_char('\b');
+            // // kprint_char('\b');
             shell_out_char('\b');
         }
     } else {
         if (buffer_idx < MAX_COMMAND_LEN - 1) {
             command_buffer[buffer_idx++] = c;
-            // kprint_char(c);
+            // // kprint_char(c);
             shell_out_char(c);
         }
     }

@@ -47,16 +47,17 @@ void kernel_main(void* mb_info) {
     // (void)pfs_persist_smoketest();
     
     idt_init(); 
-    timer_init(100);
+    timer_init(1000);
     keyboard_init();
     mouse_init();
+
+    // Initialize System UI first so net_init's kprintf messages land below the topbar,
+    // not into the topbar blur region (which is drawn here).
+    systemui_init();
 
     // Networking core + loopback device.
     // Real NIC drivers can register a net_nic_interfaces_t and call net_handle_packet().
     net_init();
-    
-    // Initialize System UI (Top Bar, Dock)
-    systemui_init();
 
     // Initialize shell without opening a terminal window by default.
     // The dock launcher can create/focus a terminal window and attach the shell output sink.
@@ -68,16 +69,21 @@ void kernel_main(void* mb_info) {
     task_init();
     create_task(shell_worker_entry);
 
+    // Restore the topbar now that all init kprintf calls have finished,
+    // so any text that landed on it during boot is cleared before the first frame.
+    systemui_restore_topbar();
+
     uint64_t last_tick  = 0;
     uint64_t last_frame = 0;
 
-    // UI loop: sleep between timer ticks so we run at exactly 100 Hz max.
-    // The shell worker task handles commands; this loop is pure UI — never blocks.
+    // UI loop: cap rendering at ~60 fps (16 ms at 1000 Hz).
+    // The scheduler gives this task (priority 0) 4 ms quanta; the shell worker
+    // (priority 1) gets 1 ms quanta.  Between frame deadlines we hlt so the
+    // shell worker can use its quantum productively.
     while(1) {
         __asm__ volatile("sti");
         uint64_t now = get_ticks();
-        if (now == last_frame) {
-            // Nothing to do until the next timer tick — hand CPU back.
+        if (now - last_frame < 16) {
             __asm__ volatile("hlt");
             continue;
         }
@@ -88,7 +94,7 @@ void kernel_main(void* mb_info) {
         dock_update(mouse_get_x(), mouse_get_y(), (mouse_get_buttons() & 1) != 0);
         compositor_swap_buffers();
 
-        if (now - last_tick >= 100) {
+        if (now - last_tick >= 1000) {  // once per second at 1000 Hz
             systemui_update();
             e1000_poll();
             last_tick = now;

@@ -99,20 +99,11 @@ static void refresh_clock() {
         clock_x = (screen_width - time_width) / 2;
     }
 
-    // 3. RESTORE BACKGROUND (The "Separate Layer" effect)
-    // We clear a slightly larger area to ensure no artifacts when digits change width (e.g. 1 vs 2)
-    int clear_x = clock_x - 10;
-    int clear_w = time_width + 20;
-    
-    // Bounds check
-    if (clear_x < 0) clear_x = 0;
-    if (clear_x + clear_w > (int)screen_width) clear_w = screen_width - clear_x;
-
+    // 3. RESTORE BACKGROUND — full width so any kprintf text that landed on the
+    //    topbar after systemui_init (e.g. net/e1000 init messages) is wiped clean.
     for (int y = 0; y < TOPBAR_HEIGHT; y++) {
-        for (int x = 0; x < clear_w; x++) {
-            int screen_x = clear_x + x;
-            // Restore pixel from cache
-            putpixel(screen_x, y, topbar_backing_store[y * screen_width + screen_x]);
+        for (int x = 0; x < (int)screen_width; x++) {
+            putpixel(x, y, topbar_backing_store[y * screen_width + x]);
         }
     }
 
@@ -124,7 +115,7 @@ static void draw_top_bar() {
     uint32_t screen_width = get_fb_width();
     int alpha = settings_get_int("topbar_alpha");
     if (alpha <= 0) alpha = 180;
-    
+
     // Get Color from Settings
     const char* color_str = settings_get("topbar_color");
     uint32_t color = 0xFF000000; // Default Black
@@ -132,18 +123,18 @@ static void draw_top_bar() {
         color = color_parse(color_str);
     }
 
-    // 1. Draw Background (Dark Glass)
+    // 1. Draw Background
     graphics_fill_rect_alpha(
-        0, 0, 
-        screen_width, TOPBAR_HEIGHT, 
-        color, 
-        (uint8_t)alpha, 
-        false, 0, true
+        0, 0,
+        screen_width, TOPBAR_HEIGHT,
+        color,
+        (uint8_t)alpha,
+        false, 0, false
     );
 
     // 2. Draw System Title (Left)
     const char* system = settings_get("system");
-    video_draw_text(12, 8, system ? system : "ProjectOS", 0xFF000000); 
+    video_draw_text(12, 8, system ? system : "ProjectOS", 0xFF000000);
 
     // 3. CACHE the clean UI (Background + Title)
     // We do this BEFORE drawing the clock, so the cache represents the "empty" state under the clock.
@@ -175,10 +166,17 @@ void systemui_init() {
     draw_dock();
 }
 
-void systemui_update() {
-    // Refresh only the clock part using the cached background
+void systemui_restore_topbar() {
+    if (!topbar_backing_store) return;
+    uint32_t screen_width = get_fb_width();
+    for (int y = 0; y < TOPBAR_HEIGHT; y++) {
+        for (int x = 0; x < (int)screen_width; x++) {
+            putpixel(x, y, topbar_backing_store[y * screen_width + x]);
+        }
+    }
     refresh_clock();
+}
 
-    // Re-draw dock icons (and handle click updates from the main loop).
-    // The main loop should call dock_update with real mouse coords.
+void systemui_update() {
+    refresh_clock();
 }

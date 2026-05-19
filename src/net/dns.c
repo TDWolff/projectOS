@@ -149,7 +149,7 @@ bool dns_resolve(const char* hostname, uint8_t out_ip[4],
     if (!arp_resolve(nexthop, dest_mac)) {
         arp_lookup(nexthop, nic);
         __asm__ volatile("sti");
-        uint64_t deadline = get_ticks() + 200;
+        uint64_t deadline = get_ticks() + 2000;
         while (get_ticks() < deadline) {
             e1000_poll();
             if (arp_resolve(nexthop, dest_mac)) break;
@@ -196,7 +196,7 @@ bool dns_resolve(const char* hostname, uint8_t out_ip[4],
 
     // Wait up to 5 seconds for the response
     __asm__ volatile("sti");
-    uint64_t deadline = get_ticks() + 500;
+    uint64_t deadline = get_ticks() + 5000;
     while (get_ticks() < deadline) {
         e1000_poll();
         if (g_dns_result.done) break;

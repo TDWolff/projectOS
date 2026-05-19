@@ -8,6 +8,7 @@
 #include "shell.h"
 #include "compositor.h"
 #include "bmp.h"
+#include "png.h"
 
 static uint32_t* fb_addr = 0;
 static uint32_t fb_width = 0;
@@ -171,9 +172,9 @@ void video_init(void* mb_info) {
         // video_init is called after heap_init in kernel.c
         compositor_init(fb_width, fb_height, fb_pitch);
         
-        // Load Background Wallpaper
-        // Mode 1: Scale to Fit (Fills screen, crops edges)
-        bmp_draw("background.bmp", 0, 0, 0);
+        // PNG preferred, BMP fallback — both use mode 1 (scale-to-fill, centred)
+        if (!png_draw("background.png", 0, 0, 1))
+            bmp_draw("background.bmp", 0, 0, 1);
     }
 
     if (!fb_addr) return;

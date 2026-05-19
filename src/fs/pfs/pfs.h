@@ -48,4 +48,14 @@ bool pfs_list_user_root(pfs_list_cb_t cb, void* user);
 typedef bool (*pfs_list_lfn_cb_t)(const char* name, bool is_dir, void* user);
 bool pfs_list_user_root_long(pfs_list_lfn_cb_t cb, void* user);
 
+// Long-name variant that also passes the file size (0 for directories).
+typedef bool (*pfs_list_info_cb_t)(const char* name, bool is_dir, uint32_t size, void* user);
+bool pfs_list_user_root_info(pfs_list_info_cb_t cb, void* user);
+
+// Write (create or overwrite) a file on the /user FAT32 volume.
+// path must be "/user/filename.ext" or "user/filename.ext" (root dir only).
+// filename is stored as an 8.3 uppercase name on disk.
+// Returns true on success.
+bool pfs_write_user_file(const char* path, const uint8_t* data, uint32_t size);
+
 #endif

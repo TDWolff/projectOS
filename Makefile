@@ -13,9 +13,36 @@ CFLAGS = -target x86_64-pc-none-elf -ffreestanding -mno-red-zone -m64 \
 LDFLAGS = -m elf_x86_64 -T linker.ld
 
 # 2. Automatically find all sources
-SRC_C = $(shell find src -name "*.c")
+# mbedTLS library files + bridge files (tls.c) use the compat flag set.
+# -isystem ensures our stub headers (string.h, stdint.h, etc.) override the toolchain's.
+MBEDTLS_SRC = $(shell find src/net/mbedtls/library -name "*.c") \
+              src/net/mbedtls_compat/vsnprintf.c \
+              src/net/tls.c
+MBEDTLS_CFLAGS = -target x86_64-pc-none-elf -ffreestanding -mno-red-zone -m64 \
+                 -O2 -w \
+                 -isystem src/net/mbedtls_compat \
+                 -I src/net/mbedtls/include \
+                 -I src/net/mbedtls/library \
+                 -I src/include
+
+# All other C sources (excluding mbedTLS and bridge files)
+SRC_C = $(shell find src -name "*.c" \
+           ! -path "src/net/mbedtls/*" \
+           ! -path "src/net/mbedtls_compat/vsnprintf.c" \
+           ! -path "src/net/tls.c" \
+           ! -path "src/net/ca_bundle.c" \
+           ! -path "src/drivers/png.c")
 SRC_ASM_ALL = $(shell find . -name "*.asm")
-OBJ = $(SRC_ASM_ALL:.asm=.o) $(SRC_C:.c=.o)
+
+MBEDTLS_OBJ = $(MBEDTLS_SRC:.c=.o)
+
+# png.c embeds stb_image and needs the bare-metal compat headers for <string.h> etc.
+PNG_CFLAGS = -target x86_64-pc-none-elf -ffreestanding -mno-red-zone -m64 \
+             -O2 -w \
+             -isystem src/net/mbedtls_compat \
+             -Isrc/include
+
+OBJ = $(SRC_ASM_ALL:.asm=.o) $(SRC_C:.c=.o) $(MBEDTLS_OBJ) src/drivers/png.o
 
 # 3. Targets
 all: kernel.bin
@@ -24,7 +51,15 @@ all: kernel.bin
 %.o: %.asm
 	$(ASM) $(ASMFLAGS) $< -o $@
 
-# Compile C files
+# Compile mbedTLS C files (separate flags, compat headers)
+$(MBEDTLS_OBJ): %.o: %.c
+	$(CC) $(MBEDTLS_CFLAGS) -c $< -o $@
+
+# Compile png.c with compat headers so stb_image's <string.h>/<stdlib.h> resolve
+src/drivers/png.o: src/drivers/png.c
+	$(CC) $(PNG_CFLAGS) -c $< -o $@
+
+# Compile all other C files
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -81,6 +116,7 @@ run: app iso
 		dd if=/dev/zero of=disk.img bs=1m count=64 status=none; \
 	fi
 	qemu-system-x86_64 -cdrom os.iso -m 512M -vga std -display cocoa \
+		-cpu qemu64,+rdrand \
 		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
 		-netdev user,id=net0 \
 		-device e1000,netdev=net0 \
@@ -97,6 +133,7 @@ run-debug: app iso
 		-m 512M \
 		-vga std \
 		-display cocoa \
+		-cpu qemu64,+rdrand \
 		-drive file=disk.img,format=raw,if=ide,index=0,media=disk \
 		-netdev user,id=net0 \
 		-device e1000,netdev=net0 \
@@ -143,3 +180,7 @@ clean:
 	rm -rf iso_root
 	rm -f apps/*.o
 	rm -f osstorage/stress_test.pexe
+
+# Full wipe including the persistent disk image (resets /user storage).
+distclean: clean
+	rm -f disk.img

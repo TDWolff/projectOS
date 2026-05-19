@@ -131,7 +131,7 @@ tcp_conn_t* tcp_connect(uint8_t remote_ip[4], uint16_t remote_port,
     if (!arp_resolve(nexthop, mac)) {
         arp_lookup(nexthop, nic);
         __asm__ volatile("sti");
-        uint64_t dl = get_ticks() + 200;
+        uint64_t dl = get_ticks() + 2000;
         while (get_ticks() < dl) {
             e1000_poll();
             if (arp_resolve(nexthop, mac)) break;
@@ -160,7 +160,7 @@ tcp_conn_t* tcp_connect(uint8_t remote_ip[4], uint16_t remote_port,
 
     // Wait up to 5 seconds for SYN-ACK
     __asm__ volatile("sti");
-    uint64_t deadline = get_ticks() + 500;
+    uint64_t deadline = get_ticks() + 5000;
     while (get_ticks() < deadline) {
         e1000_poll();
         if (conn->state == TCP_ESTABLISHED || conn->state == TCP_CLOSED) break;

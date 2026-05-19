@@ -92,6 +92,25 @@ void pmm_init(void* mb_info) {
         }
     }
 
+    // 5. Mark module pages as USED so the heap never clobbers initrd data.
+    //    This is critical: large modules (e.g. background.bmp at 2.3 MB) can
+    //    extend above the 4 MB BUMP_MEM line and would otherwise be silently
+    //    overwritten when the heap allocates those pages.
+    for (tag = (struct multiboot_tag*)((uint8_t*)mb_info + 8);
+         tag->type != MULTIBOOT_TAG_TYPE_END;
+         tag = (struct multiboot_tag*)((uint8_t*)tag + ((tag->size + 7) & ~7))) {
+        if (tag->type == MULTIBOOT_TAG_TYPE_MODULE) {
+            struct multiboot_tag_module* mod = (struct multiboot_tag_module*)tag;
+            uint64_t mstart = mod->mod_start & ~(uint64_t)(PAGE_SIZE - 1);
+            uint64_t mend   = (mod->mod_end + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+            for (uint64_t addr = mstart; addr < mend; addr += PAGE_SIZE) {
+                uint64_t idx = addr / PAGE_SIZE;
+                if (idx < max_pages)
+                    bitmap[idx / 8] |= (1u << (idx % 8)); // mark used
+            }
+        }
+    }
+
     kprintf("PMM Initialized. Usable RAM: %d MB\n", (uint32_t)(usable_ram / 1024 / 1024));
     kprintf("Bitmap Location: %x\n", (uint64_t)bitmap);
 }

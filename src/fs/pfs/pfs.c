@@ -482,3 +482,36 @@ bool pfs_list_user_root_long(pfs_list_lfn_cb_t cb, void* user) {
     if (!g_pfs.user_mounted) return false;
     return fat32_list_root_long(&g_user_fs, (fat32_list_lfn_cb_t)cb, user);
 }
+
+bool pfs_list_user_root_info(pfs_list_info_cb_t cb, void* user) {
+    if (!cb) return false;
+    if (!g_pfs.user_mounted) return false;
+    return fat32_list_root_info(&g_user_fs, (fat32_list_info_cb_t)cb, user);
+}
+
+bool pfs_write_user_file(const char* path, const uint8_t* data, uint32_t size) {
+    if (!path || !data) return false;
+    if (!g_pfs.user_mounted) return false;
+
+    const char* p = path;
+    trim_leading_slashes(&p);
+
+    // Strip "user/" prefix
+    char comp[16];
+    int ci = 0;
+    while (p[0] && p[0] != '/' && ci < (int)(sizeof(comp) - 1)) {
+        comp[ci++] = p[0];
+        p++;
+    }
+    comp[ci] = 0;
+    if (!equals_ignore_case(comp, "user")) return false;
+    trim_leading_slashes(&p);
+
+    // Only root-directory files supported
+    for (int i = 0; p[i]; i++) {
+        if (p[i] == '/') return false;
+    }
+    if (!p[0]) return false;
+
+    return fat32_write_root_file(&g_user_fs, p, data, size);
+}

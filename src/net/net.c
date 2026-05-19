@@ -97,8 +97,6 @@ void net_init(void) {
 
     // Protocol layers
     arp_init();
-    // print to sys terminal saying ok
-    kprintf("NET: init ok (loopback up)\n");
 
     // Devices
     // Loopback registers itself and is always present.

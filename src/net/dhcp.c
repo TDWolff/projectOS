@@ -200,7 +200,6 @@ bool dhcp_request_lease(net_nic_interfaces_t* nic) {
     g_got_offer = false;
     g_got_ack   = false;
 
-    kprintf("DHCP: sending Discover...\n");
     dhcp_send(DHCP_MSG_DISCOVER, nic);
 
     // Wait for Offer (poll NIC)
@@ -211,12 +210,10 @@ bool dhcp_request_lease(net_nic_interfaces_t* nic) {
     }
 
     if (!g_got_offer) {
-        kprintf("DHCP: no Offer received.\n");
         g_state = DHCP_STATE_INIT;
         return false;
     }
 
-    kprintf("DHCP: got Offer, sending Request...\n");
     g_state = DHCP_STATE_REQUESTING;
     dhcp_send(DHCP_MSG_REQUEST, nic);
 
@@ -228,7 +225,6 @@ bool dhcp_request_lease(net_nic_interfaces_t* nic) {
     }
 
     if (!g_got_ack) {
-        kprintf("DHCP: no ACK received.\n");
         g_state = DHCP_STATE_INIT;
         return false;
     }
@@ -240,8 +236,5 @@ bool dhcp_request_lease(net_nic_interfaces_t* nic) {
     if (g_dns[0]     != 0) memcpy(nic->dns_server, g_dns,     4);
 
     g_state = DHCP_STATE_BOUND;
-    kprintf("DHCP: bound to %d.%d.%d.%d\n",
-            nic->ip_address[0], nic->ip_address[1],
-            nic->ip_address[2], nic->ip_address[3]);
     return true;
 }

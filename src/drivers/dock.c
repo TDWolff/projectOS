@@ -298,7 +298,8 @@ static void dock_launch_app(const dock_app_t* app) {
         if (!term) return;
         if (term->win) window_focus(term->win);
         shell_set_output_sink(terminal_window_shell_putc, term);
-    shell_print_prompt();
+        shell_set_term_size(term->rows, term->cols);
+        shell_print_prompt();
         return;
     }
 
@@ -324,8 +325,8 @@ static void dock_launch_app(const dock_app_t* app) {
     // Focus the newly created window.
     if (term->win) window_focus(term->win);
 
-    // Ensure shell output goes somewhere visible.
     shell_set_output_sink(terminal_window_shell_putc, term);
+    shell_set_term_size(term->rows, term->cols);
 
     // Type and execute: run <path>\n
     const char* prefix = "run ";

@@ -44,4 +44,16 @@ bool fat32_read_root_file_long(const fat32_fs_t* fs, const char* name, uint8_t**
 typedef bool (*fat32_list_lfn_cb_t)(const char* name, bool is_dir, void* user);
 bool fat32_list_root_long(const fat32_fs_t* fs, fat32_list_lfn_cb_t cb, void* user);
 
+// Iterate root-directory entries with file size included in callback.
+// Like fat32_list_root_long but passes the on-disk file_size field.
+// Directories get size == 0.
+typedef bool (*fat32_list_info_cb_t)(const char* name, bool is_dir, uint32_t size, void* user);
+bool fat32_list_root_info(const fat32_fs_t* fs, fat32_list_info_cb_t cb, void* user);
+
+// Write (create or overwrite) a file in the root directory using its 8.3 name.
+// The name is auto-converted to uppercase 8.3 format.
+// Returns true on success.
+bool fat32_write_root_file(fat32_fs_t* fs, const char* name,
+                           const uint8_t* data, uint32_t size);
+
 #endif

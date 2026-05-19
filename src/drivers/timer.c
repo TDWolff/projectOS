@@ -9,7 +9,8 @@ uint64_t system_ticks = 0;
 
 void timer_handler() {
     system_ticks++;
-    e1000_poll();
+    // Poll NIC at ~62 Hz (every 16ms) to avoid ISR overhead at 1000 Hz.
+    if ((system_ticks & 15) == 0) e1000_poll();
 }
 
 void timer_init(uint32_t freq) {

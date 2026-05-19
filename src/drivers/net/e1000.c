@@ -401,9 +401,6 @@ static bool e1000_try_init_from_pci(const pci_device_t* dev) {
     // Re-run discovery now that we have a real NIC.
     net_discovery_run();
 
-    kprintf("E1000: detected at %x:%x.%x BAR0=%x IRQ=%d\n",
-            dev->bus, dev->slot, dev->func, dev->bar[0], dev->irq_line);
-
     return true;
 }
 
