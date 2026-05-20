@@ -515,3 +515,65 @@ bool pfs_write_user_file(const char* path, const uint8_t* data, uint32_t size) {
 
     return fat32_write_root_file(&g_user_fs, p, data, size);
 }
+
+// Shared path strip: "/user/foo" → "foo".  Returns NULL on bad input.
+static const char* pfs_strip_user_prefix(const char* path) {
+    if (!path || !g_pfs.user_mounted) return 0;
+    const char* p = path;
+    trim_leading_slashes(&p);
+    char comp[16]; int ci = 0;
+    while (p[0] && p[0] != '/' && ci < (int)(sizeof(comp)-1)) { comp[ci++] = p[0]; p++; }
+    comp[ci] = 0;
+    if (!equals_ignore_case(comp, "user")) return 0;
+    trim_leading_slashes(&p);
+    for (int i = 0; p[i]; i++) if (p[i] == '/') return 0; // no subdir
+    return p[0] ? p : 0;
+}
+
+bool pfs_get_user_file_attr(const char* path, uint8_t* out_attr) {
+    const char* p = pfs_strip_user_prefix(path);
+    if (!p) return false;
+    return fat32_get_root_attr(&g_user_fs, p, out_attr);
+}
+
+bool pfs_set_user_file_attr(const char* path, uint8_t new_attr) {
+    const char* p = pfs_strip_user_prefix(path);
+    if (!p) return false;
+    return fat32_set_root_attr(&g_user_fs, p, new_attr);
+}
+
+bool pfs_delete_user_file(const char* path) {
+    if (!path || !g_pfs.user_mounted) return false;
+
+    const char* p = path;
+    trim_leading_slashes(&p);
+
+    char comp[16]; int ci = 0;
+    while (p[0] && p[0] != '/' && ci < (int)(sizeof(comp) - 1)) { comp[ci++] = p[0]; p++; }
+    comp[ci] = 0;
+    if (!equals_ignore_case(comp, "user")) return false;
+    trim_leading_slashes(&p);
+
+    for (int i = 0; p[i]; i++) if (p[i] == '/') return false; // no subdirs
+    if (!p[0]) return false;
+
+    return fat32_delete_root_file(&g_user_fs, p);
+}
+
+bool pfs_mkdir_user(const char* path) {
+    if (!path || !g_pfs.user_mounted) return false;
+
+    const char* p = path;
+    trim_leading_slashes(&p);
+
+    char comp[16]; int ci = 0;
+    while (p[0] && p[0] != '/' && ci < (int)(sizeof(comp) - 1)) { comp[ci++] = p[0]; p++; }
+    comp[ci] = 0;
+    if (!equals_ignore_case(comp, "user")) return false;
+    trim_leading_slashes(&p);
+
+    for (int i = 0; p[i]; i++) if (p[i] == '/') return false; // only root-level dirs
+    if (!p[0]) return false;
+
+    return fat32_mkdir_root(&g_user_fs, p);
+}

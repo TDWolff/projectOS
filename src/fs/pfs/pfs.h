@@ -58,4 +58,16 @@ bool pfs_list_user_root_info(pfs_list_info_cb_t cb, void* user);
 // Returns true on success.
 bool pfs_write_user_file(const char* path, const uint8_t* data, uint32_t size);
 
+// Delete a file from /user. Returns false if not found.
+bool pfs_delete_user_file(const char* path);
+
+// Create a directory directly inside /user. Returns false if it already exists.
+bool pfs_mkdir_user(const char* path);
+
+// Get/set the FAT attribute byte for a /user file.
+// Attribute bits: 0x01=Read-Only, 0x02=Hidden, 0x20=Archive.
+// Directory (0x10) and volume-label (0x08) bits are preserved automatically by set.
+bool pfs_get_user_file_attr(const char* path, uint8_t* out_attr);
+bool pfs_set_user_file_attr(const char* path, uint8_t new_attr);
+
 #endif

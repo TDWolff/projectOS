@@ -209,6 +209,7 @@ void video_init(void* mb_info) {
 
 void kprint_char(char c) {
     if (!fb_addr || !loaded_font.glyph_buffer) return;
+    if ((unsigned char)c >= 128) return;
 
     // Boundary logic for Windowed Shell
     uint32_t area_x = 0;

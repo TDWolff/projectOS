@@ -32,6 +32,16 @@
 static volatile bool g_shell_interrupted = false;
 static volatile bool g_command_running   = false;
 
+// Sudo elevation flag. When true, is_file_protected() and the read-only
+// check in rm are bypassed for the duration of the elevated command.
+static volatile bool g_sudo_active = false;
+
+// Password input state (written by keyboard ISR, read by shell worker).
+static volatile bool g_pw_ready     = false;
+static volatile bool g_pw_cancelled = false;
+static char g_pw_buf[64];
+static int  g_pw_len = 0;
+
 // Shell output sink: lets the windowed terminal display shell I/O.
 static void (*g_shell_putc)(char c, void* user) = 0;
 static void* g_shell_putc_user = 0;
@@ -185,10 +195,11 @@ void shell_print_prompt() {
 // List of files to exclude from user view/access
 static const char* protected_files[] = {
     "settings.pset",
-    "kernel.bin", // Usually protected anyway, but good to list
-    "limine.conf", // Same thing as kernel.bin
+    "sudopass",      // sudo password — never visible or removable
+    "kernel.bin",
+    "limine.conf",
     "terminal.dock",
-    0 // Null terminator
+    0
 };
 
 // Local ASCII-only case-insensitive compare.
@@ -269,7 +280,6 @@ static bool shell_pfs_ls_info_cb(const char* name, bool is_dir, uint32_t size, v
 
     sh_printf("  ");
     if (ctx->long_fmt || ctx->human) {
-        // name in 24-char field, then size
         char namebuf[28];
         int ni = 0;
         while (name[ni] && ni < 23) { namebuf[ni] = name[ni]; ni++; }
@@ -284,6 +294,19 @@ static bool shell_pfs_ls_info_cb(const char* name, bool is_dir, uint32_t size, v
         } else {
             sh_print_uint_field(size, 9);
         }
+        // FAT attribute column: R=read-only H=hidden A=archive
+        char path[160]; int pi = 0;
+        path[pi++]='/'; path[pi++]='u'; path[pi++]='s'; path[pi++]='e'; path[pi++]='r'; path[pi++]='/';
+        for (int i = 0; name[i] && pi < 158; i++) path[pi++] = name[i];
+        path[pi] = 0;
+        uint8_t attr = 0;
+        pfs_get_user_file_attr(path, &attr);
+        char aflags[4] = "---";
+        if (attr & 0x01) aflags[0] = 'R';
+        if (attr & 0x02) aflags[1] = 'H';
+        if (attr & 0x20) aflags[2] = 'A';
+        sh_printf("  ");
+        sh_printf(aflags);
     } else {
         sh_printf(name);
         if (is_dir) sh_printf("/");
@@ -513,7 +536,17 @@ static int32_t shell_ping_once(uint8_t target_ip[4], net_nic_interfaces_t* nic, 
 
 #define MAX_COMMAND_LEN 128
 static char command_buffer[MAX_COMMAND_LEN];
-static int buffer_idx = 0;
+static int buffer_len = 0;  // total chars in command_buffer
+static int cursor_pos = 0;  // cursor position (0..buffer_len)
+
+static void sh_emit_csi(int n, char cmd) {
+    if (n <= 0) return;
+    shell_out_char('\x1B'); shell_out_char('[');
+    char buf[8]; int i = 0, tmp = n;
+    while (tmp) { buf[i++] = (char)('0' + tmp % 10); tmp /= 10; }
+    while (i > 0) shell_out_char(buf[--i]);
+    shell_out_char(cmd);
+}
 
 // Pending command: set by the keyboard ISR (shell_update), consumed by the
 // main loop (shell_run_pending_command). Keeps heavy work out of the ISR so
@@ -554,6 +587,43 @@ bool shell_is_interrupted(void) {
     return true;
 }
 
+// --- sudo password input ---
+
+static void sudo_pw_handler(char c, void* user) {
+    (void)user;
+    if (c == '\n') {
+        g_pw_buf[g_pw_len] = 0;
+        g_pw_ready = true;
+        shell_set_input_handler(0, 0);
+        return;
+    }
+    if (c == '\x03' || c == '\x1B') {
+        g_pw_cancelled = true;
+        shell_set_input_handler(0, 0);
+        return;
+    }
+    if (c == '\b') {
+        if (g_pw_len > 0) g_pw_len--;
+        return;
+    }
+    if (g_pw_len < 63) g_pw_buf[g_pw_len++] = c;
+}
+
+// Print prompt, then block (sti+pause) until the ISR delivers a password or cancel.
+// Returns true if a password was entered; false if cancelled.
+static bool sudo_read_password(const char* prompt) {
+    g_pw_ready     = false;
+    g_pw_cancelled = false;
+    g_pw_len       = 0;
+    memset(g_pw_buf, 0, sizeof(g_pw_buf));
+    sh_printf(prompt);
+    shell_set_input_handler(sudo_pw_handler, 0);
+    __asm__ volatile("sti");
+    while (!g_pw_ready && !g_pw_cancelled) __asm__ volatile("hlt");
+    sh_printf("\n");
+    return (bool)g_pw_ready;
+}
+
 // Forward declaration — defined later in this file.
 void execute_command(char* input);
 
@@ -590,7 +660,8 @@ void shell_worker_entry(void) {
 
 void shell_init() {
     memset(command_buffer, 0, MAX_COMMAND_LEN);
-    buffer_idx = 0;
+    buffer_len = 0;
+    cursor_pos = 0;
 
     // VGA text terminal is no longer used. Background and desktop rendering
     // are handled by the compositor/windowing layer.
@@ -609,13 +680,14 @@ void shell_check_click() {
 void execute_command(char* input) {
     // 1. Help
     if (strcmp(input, "help") == 0) {
-    sh_printf("ls, cat <file>, pfs, netif, netdevice, nettest, ping <ip|host>, nslookup <host>, wget <url>, clear, run <program>, nano <file>, vim <file>\n");
-    sh_printf("  - cat <file>: reads initrd file OR /user/<file> if you pass /user/NAME.EXT\n");
-    sh_printf("  - pfs: shows persistence (/user) mount status\n");
-    sh_printf("  - netif: lists network interfaces\n");
-    sh_printf("  - netdevice: shows which NIC is selected as primary\n");
-    sh_printf("  - nettest: runs networking self-tests (ICMP + UDP echo)\n");
-    sh_printf("  - ping <ip>: send ICMP echo to an IP address\n");
+    sh_printf("ls, cat <file>, rm <file>, mkdir <dir>, chmod MODE <file>, sudo <cmd>, pfs,\n");
+    sh_printf("netif, netdevice, nettest, ping <ip|host>, nslookup <host>, wget <url>,\n");
+    sh_printf("clear, run <program>, nano <file>, vim <file>\n");
+    sh_printf("  - sudo passwd       : set or change the sudo password\n");
+    sh_printf("  - sudo <cmd>        : run <cmd> with elevated privileges\n");
+    sh_printf("  - chmod MODE file   : R=read-only H=hidden A=archive\n");
+    sh_printf("  - pfs               : shows /user mount status\n");
+    sh_printf("  - ping <ip|host>    : send ICMP echo\n");
     }
     else if (input[0]=='p' && input[1]=='i' && input[2]=='n' && input[3]=='g' && input[4]==' ') {
         const char* ip_str = input + 5;
@@ -1197,10 +1269,250 @@ void execute_command(char* input) {
             }
         }
     }
-    else if (strlen(input) > 0) {
-        // // kprintf("\nUnknown: %s", input);
+    else if (input[0]=='r' && input[1]=='m' && input[2]==' ') {
+        const char* arg = input + 3;
+        while (*arg == ' ') arg++;
+        if (!arg[0]) {
+            sh_printf("usage: rm <filename>\n");
+        } else if (is_file_protected(arg)) {
+            sh_printf("rm: permission denied: %s\n", arg);
+        } else {
+            char resolved[160];
+            shell_resolve_path(arg, resolved, (int)sizeof(resolved));
+
+            bool in_user = (resolved[0]=='/' && resolved[1]=='u' && resolved[2]=='s' &&
+                            resolved[3]=='e' && resolved[4]=='r' && resolved[5]=='/');
+            if (!in_user) {
+                sh_printf("rm: can only delete files in /user\n");
+            } else {
+                // Refuse to delete read-only files unless sudo is active
+                uint8_t attr = 0;
+                pfs_get_user_file_attr(resolved, &attr);
+                if ((attr & 0x01) && !g_sudo_active) {
+                    sh_printf("rm: cannot remove '%s': read-only file (use chmod +w or sudo rm)\n", arg);
+                } else if (pfs_delete_user_file(resolved)) {
+                    sh_printf("removed '%s'\n", resolved + 6);
+                } else {
+                    sh_printf("rm: cannot remove '%s': no such file\n", arg);
+                }
+            }
+        }
     }
-    // // kprintf("\nroot %% "); // Print prompt with newline for next line
+    else if (input[0]=='m' && input[1]=='k' && input[2]=='d' && input[3]=='i' && input[4]=='r' && input[5]==' ') {
+        const char* arg = input + 6;
+        while (*arg == ' ') arg++;
+        if (!arg[0]) {
+            sh_printf("usage: mkdir <dirname>\n");
+        } else {
+            char resolved[160];
+            shell_resolve_path(arg, resolved, (int)sizeof(resolved));
+
+            bool in_user = (resolved[0]=='/' && resolved[1]=='u' && resolved[2]=='s' &&
+                            resolved[3]=='e' && resolved[4]=='r' && resolved[5]=='/');
+            if (!in_user) {
+                sh_printf("mkdir: can only create directories in /user\n");
+            } else {
+                if (pfs_mkdir_user(resolved)) {
+                    sh_printf("created directory '%s'\n", resolved + 6);
+                } else {
+                    sh_printf("mkdir: cannot create directory '%s': already exists or no space\n", arg);
+                }
+            }
+        }
+    }
+    else if (input[0]=='c' && input[1]=='h' && input[2]=='m' && input[3]=='o' && input[4]=='d' && input[5]==' ') {
+        const char* arg = input + 6;
+        while (*arg == ' ') arg++;
+
+        // Split into MODE and FILE tokens
+        char mode[32]; int mi = 0;
+        while (*arg && *arg != ' ' && mi < 31) mode[mi++] = *arg++;
+        mode[mi] = 0;
+        while (*arg == ' ') arg++;
+        const char* filename = arg;
+
+        if (!mode[0] || !filename[0]) {
+            sh_printf("usage: chmod MODE FILE\n");
+            sh_printf("  Octal:    chmod 444 file  (read-only)  chmod 644 file  (read-write)\n");
+            sh_printf("  Symbolic: [ugoa][+-=][rwxhHa]\n");
+            sh_printf("  Bits:     R=read-only  H=hidden  A=archive\n");
+            sh_printf("  Example:  chmod -w file  chmod +h file  chmod a+w file\n");
+        } else if (is_file_protected(filename)) {
+            sh_printf("chmod: permission denied: %s\n", filename);
+        } else {
+            char resolved[160];
+            shell_resolve_path(filename, resolved, (int)sizeof(resolved));
+            bool in_user = (resolved[0]=='/' && resolved[1]=='u' && resolved[2]=='s' &&
+                            resolved[3]=='e' && resolved[4]=='r' && resolved[5]=='/');
+            if (!in_user) {
+                sh_printf("chmod: only /user files are supported\n");
+            } else {
+                uint8_t attr = 0;
+                if (!pfs_get_user_file_attr(resolved, &attr)) {
+                    sh_printf("chmod: %s: no such file\n", filename);
+                } else {
+                    bool ok = true;
+                    // --- Octal mode ---
+                    if (mode[0] >= '0' && mode[0] <= '7') {
+                        int oct = 0;
+                        for (int i = 0; mode[i] && ok; i++) {
+                            if (mode[i] < '0' || mode[i] > '7') { ok = false; break; }
+                            oct = oct * 8 + (mode[i] - '0');
+                        }
+                        if (ok) {
+                            if (oct & 0222) attr &= ~0x01u; // any write bit → clear read-only
+                            else            attr |=  0x01u; // no write bits  → set read-only
+                        }
+                    }
+                    // --- Symbolic mode: [ugoa]*[+-=][rwxhHa]+ ---
+                    else {
+                        const char* m = mode;
+                        // Skip who-specifier (we map everything to the same FAT bits)
+                        while (*m=='u'||*m=='g'||*m=='o'||*m=='a') m++;
+                        if (*m != '+' && *m != '-' && *m != '=') {
+                            sh_printf("chmod: invalid mode: %s\n", mode);
+                            ok = false;
+                        }
+                        if (ok) {
+                            char op = *m++;
+                            if (!*m) { sh_printf("chmod: missing permissions after '%c'\n", op); ok = false; }
+                            if (ok) {
+                                if (op == '=') {
+                                    // =r or =r → read-only; =rw/=w → read-write; clear hidden/archive
+                                    bool has_w = false;
+                                    for (int i = 0; m[i]; i++) if (m[i]=='w') { has_w=true; break; }
+                                    attr = has_w ? (attr & ~0x01u) : (attr | 0x01u);
+                                    attr &= ~0x02u; // clear hidden
+                                    attr &= ~0x20u; // clear archive
+                                } else {
+                                    bool add = (op == '+');
+                                    for (int i = 0; m[i]; i++) {
+                                        switch (m[i]) {
+                                        case 'w':
+                                            if (add) attr &= ~0x01u; // +w = clear read-only
+                                            else     attr |=  0x01u; // -w = set read-only
+                                            break;
+                                        case 'r': case 'x':
+                                            break; // read/execute have no FAT equivalent; no-op
+                                        case 'h': case 'H':
+                                            if (add) attr |=  0x02u;
+                                            else     attr &= ~0x02u;
+                                            break;
+                                        case 'a':
+                                            if (add) attr |=  0x20u;
+                                            else     attr &= ~0x20u;
+                                            break;
+                                        default:
+                                            sh_printf("chmod: unknown permission bit '%c'\n", m[i]);
+                                            ok = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (ok) {
+                        if (pfs_set_user_file_attr(resolved, attr)) {
+                            // Show new attribute state
+                            char aflags[4] = "---";
+                            if (attr & 0x01) aflags[0] = 'R';
+                            if (attr & 0x02) aflags[1] = 'H';
+                            if (attr & 0x20) aflags[2] = 'A';
+                            sh_printf("%s: [%s]\n", resolved + 6, aflags);
+                        } else {
+                            sh_printf("chmod: failed to write attributes\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else if (input[0]=='s' && input[1]=='u' && input[2]=='d' && input[3]=='o' &&
+             (input[4]==' ' || input[4]==0)) {
+        const char* subcmd = (input[4]==' ') ? input + 5 : "";
+        while (*subcmd == ' ') subcmd++;
+
+        // sudo passwd — set or change the sudo password
+        if (subcmd[0]=='p' && subcmd[1]=='a' && subcmd[2]=='s' && subcmd[3]=='s' &&
+            subcmd[4]=='w' && subcmd[5]=='d' && subcmd[6]==0) {
+
+            uint8_t* existing = 0; uint32_t exsz = 0;
+            bool has_pw = pfs_read_user_file("/user/sudopass", &existing, &exsz);
+
+            if (has_pw && existing && exsz > 0) {
+                if (!sudo_read_password("Current sudo password: ")) {
+                    sh_printf("passwd: cancelled\n");
+                    kfree(existing);
+                    return;
+                }
+                bool match = ((int)exsz == g_pw_len);
+                for (int i = 0; match && i < g_pw_len; i++)
+                    if (g_pw_buf[i] != (char)existing[i]) match = false;
+                kfree(existing); existing = 0;
+                if (!match) { sh_printf("passwd: incorrect password\n"); return; }
+            } else {
+                if (existing) { kfree(existing); existing = 0; }
+            }
+
+            if (!sudo_read_password("New sudo password: ")) {
+                sh_printf("passwd: cancelled\n"); return;
+            }
+            char new_pw[64]; int new_len = g_pw_len;
+            memcpy(new_pw, g_pw_buf, (uint32_t)(new_len < 64 ? new_len : 63));
+
+            if (!sudo_read_password("Confirm new sudo password: ")) {
+                sh_printf("passwd: cancelled\n"); return;
+            }
+            if (new_len != g_pw_len) { sh_printf("passwd: passwords do not match\n"); return; }
+            bool m2 = true;
+            for (int i = 0; m2 && i < new_len; i++) if (new_pw[i] != g_pw_buf[i]) m2 = false;
+            if (!m2) { sh_printf("passwd: passwords do not match\n"); return; }
+            if (new_len == 0) { sh_printf("passwd: password cannot be empty\n"); return; }
+
+            if (pfs_write_user_file("/user/sudopass", (uint8_t*)new_pw, (uint32_t)new_len)) {
+                pfs_set_user_file_attr("/user/sudopass", 0x03); // read-only + hidden
+                sh_printf("passwd: password updated\n");
+            } else {
+                sh_printf("passwd: failed to save password\n");
+            }
+        }
+        // sudo <command> — authenticate and run subcmd with elevated privileges
+        else if (subcmd[0]) {
+            if (!pfs_get_state() || !pfs_get_state()->user_mounted) {
+                sh_printf("sudo: /user not mounted, cannot verify password\n");
+                return;
+            }
+            uint8_t* stored = 0; uint32_t storedsz = 0;
+            if (!pfs_read_user_file("/user/sudopass", &stored, &storedsz) ||
+                !stored || storedsz == 0) {
+                sh_printf("sudo: no password set - run 'sudo passwd' first\n");
+                if (stored) kfree(stored);
+                return;
+            }
+            if (!sudo_read_password("Password: ")) {
+                sh_printf("sudo: cancelled\n"); kfree(stored); return;
+            }
+            bool ok = ((int)storedsz == g_pw_len);
+            for (int i = 0; ok && i < g_pw_len; i++)
+                if (g_pw_buf[i] != (char)stored[i]) ok = false;
+            kfree(stored);
+            if (!ok) { sh_printf("sudo: incorrect password\n"); return; }
+
+            char subcmd_buf[MAX_COMMAND_LEN];
+            int si = 0;
+            while (subcmd[si] && si < MAX_COMMAND_LEN - 1) { subcmd_buf[si] = subcmd[si]; si++; }
+            subcmd_buf[si] = 0;
+            g_sudo_active = true;
+            execute_command(subcmd_buf);
+            g_sudo_active = false;
+        }
+        else {
+            sh_printf("usage: sudo <command>\n       sudo passwd\n");
+        }
+    }
+    else if (strlen(input) > 0) {
+        sh_printf("Unknown command: %s\n", input);
+    }
 }
 
 // --- Tab completion + history navigation helpers ---
@@ -1208,7 +1520,7 @@ void execute_command(char* input) {
 static int g_esc_state = 0; // 0=normal 1=got ESC 2=got ESC+[
 
 static const char* g_builtin_cmds[] = {
-    "help", "ls", "cat", "pfs", "nettest", "netif", "netdevice",
+    "help", "ls", "cat", "rm", "mkdir", "chmod", "sudo", "pfs", "nettest", "netif", "netdevice",
     "ping", "nslookup", "wget", "clear", "run", "nano", "vim", "cd",
     0
 };
@@ -1231,10 +1543,12 @@ static void history_navigate(int delta) {
 
     // Past newest: restore saved buffer
     if (new_pos < 0) {
-        for (int i = 0; i < buffer_idx; i++) shell_out_char('\b');
+        if (cursor_pos > 0) sh_emit_csi(cursor_pos, 'D');
+        shell_out_char('\x1B'); shell_out_char('['); shell_out_char('K');
         memcpy(command_buffer, g_history_saved, MAX_COMMAND_LEN);
-        buffer_idx = (int)strlen(command_buffer);
-        for (int i = 0; i < buffer_idx; i++) shell_out_char(command_buffer[i]);
+        buffer_len = (int)strlen(command_buffer);
+        cursor_pos = buffer_len;
+        for (int i = 0; i < buffer_len; i++) shell_out_char(command_buffer[i]);
         g_history_pos = -1;
         return;
     }
@@ -1243,25 +1557,29 @@ static void history_navigate(int delta) {
     const char* entry = history_get(new_pos);
     if (!entry) return;
 
-    for (int i = 0; i < buffer_idx; i++) shell_out_char('\b');
+    if (cursor_pos > 0) sh_emit_csi(cursor_pos, 'D');
+    shell_out_char('\x1B'); shell_out_char('['); shell_out_char('K');
     g_history_pos = new_pos;
     int i = 0;
     while (entry[i] && i < MAX_COMMAND_LEN - 1) { command_buffer[i] = entry[i]; i++; }
     command_buffer[i] = 0;
-    buffer_idx = i;
-    for (int j = 0; j < buffer_idx; j++) shell_out_char(command_buffer[j]);
+    buffer_len = i;
+    cursor_pos = buffer_len;
+    for (int j = 0; j < buffer_len; j++) shell_out_char(command_buffer[j]);
 }
 
 #define TAB_MAX_MATCHES 32
 
 static void shell_do_tab_complete(void) {
+    if (cursor_pos != buffer_len) return; // only complete at end of line
+
     // Find the start of the last word in the buffer
     int word_start = 0;
-    for (int i = 0; i < buffer_idx; i++)
+    for (int i = 0; i < buffer_len; i++)
         if (command_buffer[i] == ' ') word_start = i + 1;
 
     const char* prefix = command_buffer + word_start;
-    int plen = buffer_idx - word_start;
+    int plen = buffer_len - word_start;
     bool completing_cmd = (word_start == 0);
 
     const char* matches[TAB_MAX_MATCHES];
@@ -1286,16 +1604,16 @@ static void shell_do_tab_complete(void) {
     if (nmatch == 0) return;
 
     if (nmatch == 1) {
-        // Complete the unique match
         const char* rest = matches[0] + plen;
-        while (*rest && buffer_idx < MAX_COMMAND_LEN - 1) {
-            command_buffer[buffer_idx++] = *rest;
+        while (*rest && buffer_len < MAX_COMMAND_LEN - 1) {
+            command_buffer[buffer_len++] = *rest;
+            cursor_pos++;
             shell_out_char(*rest);
             rest++;
         }
-        // Append space after a completed command name
-        if (completing_cmd && buffer_idx < MAX_COMMAND_LEN - 1) {
-            command_buffer[buffer_idx++] = ' ';
+        if (completing_cmd && buffer_len < MAX_COMMAND_LEN - 1) {
+            command_buffer[buffer_len++] = ' ';
+            cursor_pos++;
             shell_out_char(' ');
         }
         return;
@@ -1311,19 +1629,19 @@ static void shell_do_tab_complete(void) {
         }
     }
 
-    for (int j = 0; j < lcp && buffer_idx < MAX_COMMAND_LEN - 1; j++) {
+    for (int j = 0; j < lcp && buffer_len < MAX_COMMAND_LEN - 1; j++) {
         char ch = matches[0][plen + j];
-        command_buffer[buffer_idx++] = ch;
+        command_buffer[buffer_len++] = ch;
+        cursor_pos++;
         shell_out_char(ch);
     }
 
     if (lcp == 0) {
-        // No common extension: list all candidates
         sh_printf("\n");
         for (int i = 0; i < nmatch; i++) { sh_printf(matches[i]); sh_printf("  "); }
         sh_printf("\n");
         shell_print_prompt();
-        for (int i = 0; i < buffer_idx; i++) shell_out_char(command_buffer[i]);
+        for (int i = 0; i < buffer_len; i++) shell_out_char(command_buffer[i]);
     }
 }
 
@@ -1344,9 +1662,11 @@ void shell_update(char c) {
     }
     if (g_esc_state == 2) {
         g_esc_state = 0;
-        if (c == 'A') { history_navigate(1);  return; } // Up   → older
-        if (c == 'B') { history_navigate(-1); return; } // Down → newer
-        return; // left/right/other CSI sequences: ignore
+        if (c == 'A') { history_navigate(1);  return; }
+        if (c == 'B') { history_navigate(-1); return; }
+        if (c == 'C') { if (cursor_pos < buffer_len) { cursor_pos++; sh_emit_csi(1, 'C'); } return; }
+        if (c == 'D') { if (cursor_pos > 0)          { cursor_pos--; sh_emit_csi(1, 'D'); } return; }
+        return;
     }
 
     if (c == '\x1B') { g_esc_state = 1; return; }
@@ -1359,7 +1679,8 @@ void shell_update(char c) {
             sh_printf("^C\n");
         } else {
             memset(command_buffer, 0, MAX_COMMAND_LEN);
-            buffer_idx = 0;
+            buffer_len = 0;
+            cursor_pos = 0;
             sh_printf("^C\n");
             shell_print_prompt();
         }
@@ -1367,7 +1688,7 @@ void shell_update(char c) {
     }
 
     if (c == '\n') {
-        command_buffer[buffer_idx] = '\0';
+        command_buffer[buffer_len] = '\0';
         history_push(command_buffer);
         g_history_pos = -1;
         sh_printf("\n");
@@ -1379,17 +1700,46 @@ void shell_update(char c) {
             g_command_ready = true;
         }
         memset(command_buffer, 0, MAX_COMMAND_LEN);
-        buffer_idx = 0;
+        buffer_len = 0;
+        cursor_pos = 0;
     } else if (c == '\b') {
-        if (buffer_idx > 0) {
-            buffer_idx--;
-            command_buffer[buffer_idx] = 0;
-            shell_out_char('\b');
+        if (cursor_pos > 0) {
+            if (cursor_pos == buffer_len) {
+                // At end: simple erase
+                cursor_pos--;
+                buffer_len--;
+                command_buffer[buffer_len] = 0;
+                shell_out_char('\b');
+            } else {
+                // Mid-line: shift buffer left, redraw tail
+                for (int i = cursor_pos - 1; i < buffer_len - 1; i++)
+                    command_buffer[i] = command_buffer[i + 1];
+                buffer_len--;
+                cursor_pos--;
+                command_buffer[buffer_len] = 0;
+                sh_emit_csi(1, 'D');
+                shell_out_char('\x1B'); shell_out_char('['); shell_out_char('K');
+                for (int i = cursor_pos; i < buffer_len; i++) shell_out_char(command_buffer[i]);
+                if (buffer_len > cursor_pos) sh_emit_csi(buffer_len - cursor_pos, 'D');
+            }
         }
     } else {
-        if (buffer_idx < MAX_COMMAND_LEN - 1) {
-            command_buffer[buffer_idx++] = c;
-            shell_out_char(c);
+        if (buffer_len < MAX_COMMAND_LEN - 1) {
+            if (cursor_pos == buffer_len) {
+                // Appending at end
+                command_buffer[buffer_len++] = c;
+                cursor_pos++;
+                shell_out_char(c);
+            } else {
+                // Insert in middle: shift right, redraw tail
+                for (int i = buffer_len; i > cursor_pos; i--)
+                    command_buffer[i] = command_buffer[i - 1];
+                command_buffer[cursor_pos] = c;
+                buffer_len++;
+                cursor_pos++;
+                for (int i = cursor_pos - 1; i < buffer_len; i++) shell_out_char(command_buffer[i]);
+                if (buffer_len > cursor_pos) sh_emit_csi(buffer_len - cursor_pos, 'D');
+            }
         }
     }
 }

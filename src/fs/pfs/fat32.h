@@ -56,4 +56,20 @@ bool fat32_list_root_info(const fat32_fs_t* fs, fat32_list_info_cb_t cb, void* u
 bool fat32_write_root_file(fat32_fs_t* fs, const char* name,
                            const uint8_t* data, uint32_t size);
 
+// Get the FAT attribute byte for a root-directory entry by displayed name.
+bool fat32_get_root_attr(const fat32_fs_t* fs, const char* name, uint8_t* out_attr);
+
+// Set the FAT attribute byte for a root-directory entry.
+// Directory (0x10) and volume-label (0x08) bits are preserved automatically.
+bool fat32_set_root_attr(fat32_fs_t* fs, const char* name, uint8_t new_attr);
+
+// Delete a file or empty directory from the root directory by its displayed name.
+// Frees the cluster chain and marks directory entries as deleted.
+// Returns true on success, false if the name was not found.
+bool fat32_delete_root_file(fat32_fs_t* fs, const char* name);
+
+// Create a directory in the root directory.
+// Returns false if the name already exists or there is no space.
+bool fat32_mkdir_root(fat32_fs_t* fs, const char* name);
+
 #endif

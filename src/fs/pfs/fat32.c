@@ -945,3 +945,290 @@ w_scan_done:
     de[30] = (uint8_t)(size >> 16); de[31] = (uint8_t)(size >> 24);
     return ata_write512(wlba[nlfn], sec);
 }
+
+// Delete a file (or empty directory) from the root directory by its displayed name.
+// Marks the SFN and any preceding LFN entries as 0xE5 and frees the cluster chain.
+bool fat32_delete_root_file(fat32_fs_t* fs, const char* name) {
+    if (!fs || !fs->mounted || !name) return false;
+
+    uint32_t dir_cluster = fs->root_cluster;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    char lfn_buf[FAT32_LFN_MAX_CHARS];
+    int lfn_len = 0;
+    bool have_lfn = false;
+    uint8_t lfn_chksum_val = 0;
+
+    // Track LFN entry positions so we can mark them deleted alongside the SFN.
+    #define DEL_LFN_MAX 22
+    uint32_t lfn_lba[DEL_LFN_MAX];
+    uint32_t lfn_off_arr[DEL_LFN_MAX];
+    int lfn_count = 0;
+
+    lfn_reset(lfn_buf, &lfn_len, &have_lfn, &lfn_chksum_val);
+
+    while (dir_cluster >= 2 && dir_cluster < 0x0FFFFFF8UL) {
+        uint32_t lba0 = cluster_to_lba(fs, dir_cluster);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            uint32_t lba = lba0 + s;
+            if (!ata_read512(lba, sec)) return false;
+
+            for (uint32_t off = 0; off + 32 <= ATA_SECTOR_SIZE; off += 32) {
+                uint8_t first = sec[off];
+                uint8_t attr  = sec[off + 11];
+
+                if (first == 0x00) return false; // end of directory — not found
+                if (first == 0xE5) {
+                    lfn_count = 0;
+                    lfn_reset(lfn_buf, &lfn_len, &have_lfn, &lfn_chksum_val);
+                    continue;
+                }
+
+                if (attr == 0x0F) { // LFN entry
+                    if (lfn_count < DEL_LFN_MAX) {
+                        lfn_lba[lfn_count]     = lba;
+                        lfn_off_arr[lfn_count] = off;
+                        lfn_count++;
+                    }
+                    lfn_consume_entry((const fat_lfn_t*)(sec + off), lfn_buf, &lfn_len, &have_lfn, &lfn_chksum_val);
+                    continue;
+                }
+
+                const fat_dirent_t* de = (const fat_dirent_t*)(sec + off);
+                if ((de->attr & 0x08) || de->name[0] == '.') {
+                    lfn_count = 0;
+                    lfn_reset(lfn_buf, &lfn_len, &have_lfn, &lfn_chksum_val);
+                    continue;
+                }
+
+                // Determine the display name
+                char sfn_name[13];
+                const char* cmp_name = 0;
+                if (have_lfn) {
+                    lfn_finalize(lfn_buf, &lfn_len);
+                    if (lfn_len > 0) cmp_name = lfn_buf;
+                }
+                if (!cmp_name) {
+                    name_83_to_string(de->name, sfn_name);
+                    cmp_name = sfn_name;
+                }
+
+                if (strcmp(cmp_name, name) == 0) {
+                    // Extract first cluster of the file/directory
+                    uint32_t file_cluster =
+                        ((uint32_t)(sec[off+20] | ((uint32_t)sec[off+21] << 8)) << 16) |
+                         (uint32_t)(sec[off+26] | ((uint32_t)sec[off+27] << 8));
+
+                    // Mark the SFN entry deleted
+                    sec[off] = 0xE5;
+                    if (!ata_write512(lba, sec)) return false;
+
+                    // Mark any preceding LFN entries deleted
+                    for (int i = 0; i < lfn_count; i++) {
+                        uint8_t lsec[ATA_SECTOR_SIZE];
+                        if (ata_read512(lfn_lba[i], lsec)) {
+                            lsec[lfn_off_arr[i]] = 0xE5;
+                            ata_write512(lfn_lba[i], lsec);
+                        }
+                    }
+
+                    // Free the cluster chain
+                    if (file_cluster >= 2 && file_cluster < 0x0FFFFFF8UL)
+                        fat32_free_cluster_chain(fs, file_cluster);
+
+                    return true;
+                }
+
+                lfn_count = 0;
+                lfn_reset(lfn_buf, &lfn_len, &have_lfn, &lfn_chksum_val);
+            }
+        }
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, dir_cluster, &next)) return false;
+        dir_cluster = next;
+    }
+    return false; // not found
+}
+
+// Create a directory in the FAT32 root directory.
+// Returns false if the name already exists or there is no space.
+bool fat32_mkdir_root(fat32_fs_t* fs, const char* name) {
+    if (!fs || !fs->mounted || !name) return false;
+
+    char n83[11];
+    if (!name_to_83(name, n83)) return false;
+
+    int namelen = 0; while (name[namelen]) namelen++;
+    int nlfn    = (namelen + 12) / 13;
+    int nslots  = nlfn + 1;
+    uint8_t chksum = lfn_name_chksum(n83);
+
+    uint32_t wlba[FAT_WIN_MAX];
+    uint32_t woff[FAT_WIN_MAX];
+    int wfill = 0;
+    bool found_run = false, already_exists = false;
+
+    uint32_t dir_cluster = fs->root_cluster;
+    while (dir_cluster >= 2 && dir_cluster < 0x0FFFFFF8UL) {
+        uint32_t lba0 = cluster_to_lba(fs, dir_cluster);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            uint32_t lba = lba0 + s;
+            uint8_t sec[ATA_SECTOR_SIZE];
+            if (!ata_read512(lba, sec)) return false;
+
+            for (uint32_t off = 0; off + 32 <= ATA_SECTOR_SIZE; off += 32) {
+                uint8_t first = sec[off];
+                uint8_t attr  = sec[off + 11];
+                bool is_free  = (first == 0xE5 || first == 0x00);
+
+                if (!found_run) {
+                    if (is_free) {
+                        wlba[wfill] = lba; woff[wfill] = off; wfill++;
+                        if (wfill == nslots) found_run = true;
+                    } else {
+                        wfill = 0;
+                    }
+                }
+
+                if (first == 0x00) { if (found_run) goto mkdir_done; continue; }
+                if (is_free || attr == 0x0F || (sec[off+11] & 0x08)) continue;
+
+                // Check for existing SFN match (already exists)
+                bool match = true;
+                for (int i = 0; i < 11; i++) {
+                    if (sec[off + (uint32_t)i] != (uint8_t)n83[i]) { match = false; break; }
+                }
+                if (match) { already_exists = true; goto mkdir_done; }
+            }
+        }
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, dir_cluster, &next)) return false;
+        dir_cluster = next;
+    }
+mkdir_done:
+    if (already_exists || !found_run) return false;
+
+    // Allocate a cluster for the new directory
+    uint32_t new_cluster = fat32_alloc_cluster(fs);
+    if (!new_cluster) return false;
+
+    // Zero the cluster then write '.' and '..' entries in its first sector
+    uint8_t init[ATA_SECTOR_SIZE];
+    memset(init, 0, ATA_SECTOR_SIZE);
+    uint32_t new_lba0 = cluster_to_lba(fs, new_cluster);
+    for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+        if (!ata_write512(new_lba0 + s, init)) {
+            fat32_free_cluster_chain(fs, new_cluster); return false;
+        }
+    }
+    {
+        uint8_t sec[ATA_SECTOR_SIZE];
+        if (!ata_read512(new_lba0, sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+        // '.' entry (offset 0)
+        memset(sec, ' ', 11); sec[0] = '.'; sec[11] = 0x10;
+        sec[20] = (uint8_t)(new_cluster >> 16); sec[21] = (uint8_t)(new_cluster >> 24);
+        sec[26] = (uint8_t)(new_cluster & 0xFF); sec[27] = (uint8_t)((new_cluster >> 8) & 0xFF);
+        // '..' entry (offset 32)
+        memset(sec + 32, ' ', 11); sec[32] = '.'; sec[33] = '.'; sec[43] = 0x10;
+        sec[52] = (uint8_t)(fs->root_cluster >> 16); sec[53] = (uint8_t)(fs->root_cluster >> 24);
+        sec[58] = (uint8_t)(fs->root_cluster & 0xFF); sec[59] = (uint8_t)((fs->root_cluster >> 8) & 0xFF);
+        if (!ata_write512(new_lba0, sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+    }
+
+    // Write LFN entries
+    for (int i = 0; i < nlfn; i++) {
+        int actual_ord = nlfn - i;
+        uint8_t ord = (uint8_t)actual_ord;
+        if (i == 0) ord |= 0x40;
+        int base = (actual_ord - 1) * 13;
+        uint8_t lfn_buf[32];
+        lfn_build_entry(lfn_buf, ord, name, namelen, base, chksum);
+        uint8_t sec[ATA_SECTOR_SIZE];
+        if (!ata_read512(wlba[i], sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+        memcpy(sec + woff[i], lfn_buf, 32);
+        if (!ata_write512(wlba[i], sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+    }
+
+    // Write SFN directory entry
+    {
+        uint8_t sec[ATA_SECTOR_SIZE];
+        if (!ata_read512(wlba[nlfn], sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+        uint8_t* de = sec + woff[nlfn];
+        memset(de, 0, 32);
+        memcpy(de, n83, 11);
+        de[11] = 0x10; // ATTR_DIRECTORY
+        de[20] = (uint8_t)(new_cluster >> 16); de[21] = (uint8_t)((new_cluster >> 16) >> 8);
+        de[26] = (uint8_t)(new_cluster & 0xFF); de[27] = (uint8_t)((new_cluster >> 8) & 0xFF);
+        // size = 0 for directory
+        if (!ata_write512(wlba[nlfn], sec)) { fat32_free_cluster_chain(fs, new_cluster); return false; }
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Attribute get / set
+// ---------------------------------------------------------------------------
+
+// Shared: scan root directory for a file by display name; returns the sector
+// LBA and byte offset of its SFN entry on success.
+static bool fat32_find_sfn(const fat32_fs_t* fs, const char* name,
+                            uint32_t* out_lba, uint32_t* out_off) {
+    uint32_t dir_cluster = fs->root_cluster;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    char lfn_buf[FAT32_LFN_MAX_CHARS];
+    int lfn_len = 0; bool have_lfn = false; uint8_t lchk = 0;
+    lfn_reset(lfn_buf, &lfn_len, &have_lfn, &lchk);
+
+    while (dir_cluster >= 2 && dir_cluster < 0x0FFFFFF8UL) {
+        uint32_t lba0 = cluster_to_lba(fs, dir_cluster);
+        for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
+            uint32_t lba = lba0 + s;
+            if (!ata_read512(lba, sec)) return false;
+            for (uint32_t off = 0; off + 32 <= ATA_SECTOR_SIZE; off += 32) {
+                uint8_t first = sec[off];
+                uint8_t attr  = sec[off + 11];
+                if (first == 0x00) return false;
+                if (first == 0xE5) { lfn_reset(lfn_buf,&lfn_len,&have_lfn,&lchk); continue; }
+                if (attr == 0x0F) {
+                    lfn_consume_entry((const fat_lfn_t*)(sec+off),lfn_buf,&lfn_len,&have_lfn,&lchk);
+                    continue;
+                }
+                const fat_dirent_t* de = (const fat_dirent_t*)(sec + off);
+                if ((de->attr & 0x08) || de->name[0] == '.') {
+                    lfn_reset(lfn_buf,&lfn_len,&have_lfn,&lchk); continue;
+                }
+                char sfn_name[13]; const char* cmp = 0;
+                if (have_lfn) { lfn_finalize(lfn_buf,&lfn_len); if (lfn_len>0) cmp=lfn_buf; }
+                if (!cmp) { name_83_to_string(de->name, sfn_name); cmp = sfn_name; }
+                if (strcmp(cmp, name) == 0) { *out_lba = lba; *out_off = off; return true; }
+                lfn_reset(lfn_buf,&lfn_len,&have_lfn,&lchk);
+            }
+        }
+        uint32_t next = 0;
+        if (!fat32_read_fat_entry(fs, dir_cluster, &next)) return false;
+        dir_cluster = next;
+    }
+    return false;
+}
+
+bool fat32_get_root_attr(const fat32_fs_t* fs, const char* name, uint8_t* out_attr) {
+    if (!fs || !fs->mounted || !name || !out_attr) return false;
+    uint32_t lba, off;
+    if (!fat32_find_sfn(fs, name, &lba, &off)) return false;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    if (!ata_read512(lba, sec)) return false;
+    *out_attr = sec[off + 11];
+    return true;
+}
+
+bool fat32_set_root_attr(fat32_fs_t* fs, const char* name, uint8_t new_attr) {
+    if (!fs || !fs->mounted || !name) return false;
+    uint32_t lba, off;
+    if (!fat32_find_sfn(fs, name, &lba, &off)) return false;
+    uint8_t sec[ATA_SECTOR_SIZE];
+    if (!ata_read512(lba, sec)) return false;
+    // Preserve directory (0x10) and volume-label (0x08) bits.
+    new_attr = (new_attr & ~0x18u) | (sec[off + 11] & 0x18u);
+    sec[off + 11] = new_attr;
+    return ata_write512(lba, sec);
+}
